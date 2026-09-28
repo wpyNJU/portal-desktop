@@ -1,0 +1,12 @@
+__pycache__/
+.venv/
+*.pyc
+*.db
+*.db-*
+*.sqlite3
+*.sqlite3-*
+*.jsonl
+assistant-profile*.json
+logs/
+backups/
+deploy-*/

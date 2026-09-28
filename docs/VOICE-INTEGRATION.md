@@ -41,7 +41,9 @@
 
 当前 `SceneTask` 描述 Portal 子任务进度，`SceneQueueStore` 描述尚未确认发送的消息；两者都不能直接当作语音报告账本。需要单独记录“查询执行”和“报告交付”。
 
-现有语音实现可参考同级工作区的 `work/doubao_call.js`、`doubao_server.py`、`background_tasks.py`、`task_store.py` 和 `task_reports.py`。迁移的是音频协议、播放确认、任务持久化与调度规则，不复制凭据文件或直接照搬页面。
+云端语音服务源码已纳入 [`services/voice-gateway`](../services/voice-gateway/README.md)，包含 `doubao_server.py`、`background_tasks.py`、`task_store.py` 和 `task_reports.py` 及其依赖。手机页面仍独立部署。迁移的是音频协议、播放确认、任务持久化与调度规则，不复制凭据文件或直接照搬页面。
+
+2026-09-28 的查询标题更新已部署：每次 `ask_agent` 同时生成短标题，保留完整原请求；新结果、续播征询和失败提醒均带上任务主题。旧记录兼容处理，不重发查询、不额外调用模型起名。对应源码与离线回归测试见上述服务目录。
 
 ## 应用中的结构
 
