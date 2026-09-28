@@ -2,6 +2,8 @@ import { protocol, session } from 'electron';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { ChatProxy } from '../chat/proxy';
+import type { WebContents } from 'electron';
+import { allowVoicePermission } from '../voice/permissions';
 
 const MIME_TYPES: Record<string, string> = {
   '.html': 'text/html',
@@ -40,7 +42,11 @@ export function registerLocalProtocol(assets: string, proxy: ChatProxy) {
   });
 }
 
-export function configureLocalSession() {
-  session.defaultSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
-  session.defaultSession.setPermissionCheckHandler(() => false);
+export function configureLocalSession(voice?: { contents: () => WebContents | undefined; url: () => string; active: () => boolean }) {
+  session.defaultSession.setPermissionRequestHandler((contents, permission, callback, details) => callback(
+    allowVoicePermission(!!voice?.active() && contents === voice.contents(), permission, details.isMainFrame,
+      details.requestingUrl, voice?.url() || '', 'mediaTypes' in details ? details.mediaTypes || [] : [])));
+  session.defaultSession.setPermissionCheckHandler((contents, permission, _origin, details) =>
+    allowVoicePermission(!!voice?.active() && contents === voice.contents(), permission, details.isMainFrame,
+      details.requestingUrl || '', voice?.url() || '', details.mediaType ? [details.mediaType] : []));
 }

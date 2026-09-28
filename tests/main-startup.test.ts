@@ -43,7 +43,7 @@ it('defers repeated launch until initialization and opens one usable window even
     protocolReadyAtCreation.push(vi.mocked(protocol.handle).mock.calls.length > 0);
     const window = Object.assign(new EventEmitter(), {
       isDestroyed: () => false, isMinimized: () => false, show: vi.fn(), focus: vi.fn(), restore: vi.fn(),
-      webContents: { isDestroyed: () => false, send: vi.fn() },
+      webContents: Object.assign(new EventEmitter(), { isDestroyed: () => false, send: vi.fn(), setBackgroundThrottling: vi.fn() }),
     });
     const browser = { close: vi.fn() };
     options.onBrowser(browser as never);
@@ -73,6 +73,8 @@ it('defers repeated launch until initialization and opens one usable window even
     expect(notifications.preferences).toMatchObject({ enabled: true, bonfire: true });
     expect(await handlers.get('beings:notification-target')!(request as never)).toBeNull();
     await expect(handlers.get('beings:notifications')!({ ...request, senderFrame: {} } as never, { enabled: false })).rejects.toThrow('Untrusted');
+    await expect(handlers.get('beings:voice-start')!({ ...request, senderFrame: {} } as never, {})).rejects.toThrow('Untrusted');
+    await expect(handlers.get('beings:voice-profile')!({ ...request, senderFrame: {} } as never, 'https://example.com', true)).rejects.toThrow('Untrusted');
     const snapshot = await handlers.get('beings:snapshot')!(request as never);
     expect(snapshot.portal.message).toBe('Windows 命令环境不可用，请检查后重试。');
     expect(snapshot.notice).not.toContain('ENOENT');

@@ -1,6 +1,17 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import type { DesktopAPI, PortalState, TownLiveState } from '../shared/types';
 const api: DesktopAPI = {
+  voice: {
+    profile: (endpoint, refresh = false) => ipcRenderer.invoke('beings:voice-profile', endpoint, refresh),
+    start: input => ipcRenderer.invoke('beings:voice-start', input),
+    send: (callId, command) => ipcRenderer.invoke('beings:voice-send', callId, command),
+    stop: callId => ipcRenderer.invoke('beings:voice-stop', callId),
+    onEvent: callback => {
+      const listener = (_event: unknown, data: import('../shared/voice').VoiceEvent) => callback(data);
+      ipcRenderer.on('beings:voice-event', listener);
+      return () => ipcRenderer.removeListener('beings:voice-event', listener);
+    },
+  },
   platform: process.platform,
   changeChatSession: (operation, value, endpoint, sceneId) => ipcRenderer.invoke('beings:chat-session', operation, value, endpoint, sceneId),
   clientStartup: enabled => ipcRenderer.invoke('beings:client-startup', enabled),

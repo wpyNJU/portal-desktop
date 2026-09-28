@@ -3,6 +3,7 @@ import { SceneTaskObserver } from './portal/subagent-tasks';
 import { setupSubagent, validateSubagentSetup, readSubagentConfig, setSubagentEnabled } from './portal/subagent-setup';
 import { ClientCommandServer } from './chat/client-server';
 import { ClientContextReader } from './chat/client-context';
+import { VoiceService } from './voice/service';
 import { app, clipboard, dialog, ipcMain, net, nativeImage, nativeTheme, Notification, protocol, safeStorage, shell, type BrowserWindow, type Tray } from 'electron';
 import { DesktopNotifications } from './app/notifications';
 import { repairDevelopmentShortcut, updateNotificationShortcutIcon, windowsAppId } from './app/windows-identity';
@@ -73,6 +74,7 @@ let windowReady = false;
 let browser: ClientBrowser | undefined;
 let portal: PortalSupervisor;
 let proxy: ChatProxy;
+let voice: VoiceService;
 let store: SettingsStore;
 let background: BackgroundPortal;
 let kitInstaller: KitInstaller;
@@ -121,10 +123,12 @@ function createWindow() {
     markSessionEnding: () => { sessionEnding = true; },
     openExternal: url => { void openExternal(url); },
     onBrowser: value => { browser = value; },
-    onClosed: value => { if (window === value) window = null; },
+    onClosed: value => { if (window === value) { voice?.stop(); window = null; } },
   });
   window = created.window;
   browser = created.browser;
+  window.webContents.on('render-process-gone', () => voice?.stop());
+  window.webContents.on('did-start-navigation', (_event, _url, _inPlace, isMainFrame) => { if (isMainFrame) voice?.stop(); });
 }
 
 async function ready() {
@@ -228,7 +232,13 @@ async function ready() {
   proxy = new ChatProxy(() => store.connection, net.fetch.bind(net) as typeof fetch, () => chatSessions?.current(store.connection?.endpoint) || chatScene, id => chatSessions?.list(store.connection?.endpoint).find(scene => scene.scene_id === id));
   const assets = app.isPackaged ? path.join(__dirname, `../renderer/${MAIN_WINDOW_VITE_NAME}`) : path.resolve('desktop/generated');
   registerLocalProtocol(assets, proxy);
-  configureLocalSession();
+  voice = new VoiceService(() => store.connection, () => (chatSessions?.current(store.connection?.endpoint) || chatScene)?.scene_id, event => {
+    if (!window || window.isDestroyed()) return;
+    window.webContents.send('beings:voice-event', event);
+    if (event.data.type === 'call.closed') window.webContents.setBackgroundThrottling(true);
+  });
+  configureLocalSession({ contents: () => window?.webContents, url: shellURL, active: () => voice.active });
+  app.once('will-quit', () => voice.stop());
   const clientContext = new ClientContextReader(shellURL());
   const clientCommands = new ClientCommandServer(path.join(directory, '.portal-client.json'),
     () => store.connection?.endpoint, request => clientContext.execute({ ...request, scenes: chatSessions?.list(request.endpoint) }));
@@ -275,6 +285,10 @@ async function ready() {
       catch (error) { throw new Error(errorLog.report(channel, error)); }
     });
   };
+  handle('beings:voice-start', input => { voice.start(input); window?.webContents.setBackgroundThrottling(false); });
+  handle('beings:voice-profile', (endpoint, refresh) => voice.profile(endpoint, refresh));
+  handle('beings:voice-send', (id, command) => voice.send(id, command));
+  handle('beings:voice-stop', id => { if (typeof id === 'string') voice.stop(id); });
   handle('beings:client-startup', (enabled?: boolean) => clientStartup(app, process.platform, process.execPath, enabled));
   handle('beings:notifications', (patch?: unknown) => exclusive(async () => {
     const state = patch === undefined ? notifications.state : await notifications.save(patch);
@@ -429,6 +443,7 @@ async function ready() {
     if (endpoint !== store.connection.endpoint) throw new Error('Being 连接已切换，请重试。');
     if (!['create', 'bind', 'select', 'rename', 'delete'].includes(operation)) throw new Error('无效的场景操作。');
     await chatSessions.change(endpoint, operation as 'create' | 'bind' | 'select' | 'rename' | 'delete', value, sceneId);
+    if (operation !== 'rename') voice.stop();
     return snapshot();
   }));
   const verifyConnection = async () => {
@@ -555,6 +570,7 @@ async function ready() {
     cancelTownPairing?.();
     const previous = { ...store.settings }; const previousConnection = store.connection;
     await store.save(input);
+    if (previousConnection?.link !== store.connection?.link) voice.stop();
     try {
       await verifyConnection();
       await takeover.run(store.connection!, 'manual', async replacing => {
@@ -788,6 +804,7 @@ else {
     event.preventDefault();
     if (quitting) return;
     quitting = true;
+    voice?.stop();
     cancelTownPairing?.();
     lifecycleError = '';
     void exclusive(async () => { await kitInstaller?.dispose(); await portal.stop(); browser?.close(); await errorLog.flush(); }).then(() => {

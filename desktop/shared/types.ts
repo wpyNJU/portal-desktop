@@ -62,6 +62,7 @@ export interface BrowserBounds { x: number; y: number; width: number; height: nu
 export type BrowserAction = 'back' | 'forward' | 'reload' | 'stop' | 'external' | 'close';
 export type ChatEditCommand = 'cut' | 'copy' | 'paste';
 export interface DesktopAPI {
+  voice?: import('./voice').VoiceAPI;
   platform: string;
   changeChatSession(operation: 'create' | 'bind' | 'select' | 'rename' | 'delete', value: string, endpoint: string, sceneId?: string): Promise<Snapshot>;
   clientStartup(enabled?: boolean): Promise<ClientStartup>;

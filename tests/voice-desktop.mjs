@@ -1,0 +1,55 @@
+import assert from 'node:assert/strict';
+import { mkdir } from 'node:fs/promises';
+import { build } from 'esbuild';
+import { _electron as electron } from 'playwright';
+
+await mkdir('test-results/voice', { recursive: true });
+await build({ entryPoints: ['desktop/preload/preload.ts'], bundle: true, platform: 'node', format: 'cjs', external: ['electron'], outfile: 'test-results/voice/preload.cjs' });
+await build({ entryPoints: ['tests/fixtures/voice-desktop.mjs'], bundle: true, platform: 'node', format: 'esm', external: ['electron', 'ws'], outfile: 'test-results/voice/fixture.mjs' });
+const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE;
+const application = await electron.launch({ args: ['test-results/voice/fixture.mjs'], env, timeout: 30000 });
+try {
+  const page = await application.firstWindow();
+  const errors = [];
+  page.on('pageerror', error => errors.push(error.message));
+  await page.locator('#start-voice-call').waitFor({ timeout: 15000 });
+  await page.screenshot({ path: 'test-results/voice/entry.png' });
+  await page.locator('#start-voice-call').click();
+  await page.locator('#voice-call[open]').waitFor();
+  await page.getByRole('button', { name: '对齐并开始通话', exact: true }).waitFor();
+  assert.equal(await application.evaluate(() => globalThis.voiceMetrics.starts), 0);
+  await page.screenshot({ path: 'test-results/voice/first-alignment.png' });
+  await page.getByRole('button', { name: '对齐并开始通话', exact: true }).click();
+  await page.waitForFunction(() => document.querySelector('#voice-call-status')?.textContent?.includes('我在听'), undefined, { timeout: 15000 });
+  await page.getByText('我在，慢慢说。我们一起安排今天的事情。', { exact: true }).waitFor();
+  await page.screenshot({ path: 'test-results/voice/connected.png' });
+  await page.getByRole('button', { name: '静音麦克风', exact: true }).click();
+  await page.getByRole('button', { name: '取消静音', exact: true }).waitFor();
+  const muted = await application.evaluate(() => globalThis.voiceMetrics.muted);
+  assert.equal(muted, 1);
+  await page.getByRole('button', { name: '关闭字幕', exact: true }).click();
+  assert.equal(await page.locator('.voice-call-captions').isVisible(), false);
+  await page.getByRole('button', { name: '显示字幕', exact: true }).click();
+  await page.getByRole('button', { name: '取消静音', exact: true }).click();
+  await page.getByRole('button', { name: '挂断通话', exact: true }).click();
+  assert.equal(await page.locator('#voice-call').isVisible(), false);
+  await page.waitForTimeout(150);
+  const result = await application.evaluate(() => globalThis.voiceMetrics);
+  assert.equal(result.starts, 1); assert.equal(result.closes, 1); assert.equal(result.badFrames, 0);
+  assert.equal(result.refreshes, 1);
+  assert.ok(result.frames > 0); assert.equal(result.played, 1);
+  await page.locator('#start-voice-call').click();
+  await page.waitForFunction(() => document.querySelector('#voice-call-status')?.textContent?.includes('我在听'));
+  assert.equal(await application.evaluate(() => globalThis.voiceMetrics.refreshes), 1, 'Reconnect must reuse the saved profile');
+  await application.evaluate(() => globalThis.voiceFixtureDisconnect());
+  await page.getByRole('alert').filter({ hasText: '语音连接已断开' }).waitFor();
+  await page.screenshot({ path: 'test-results/voice/disconnected.png' });
+  await page.getByRole('button', { name: '关闭并结束通话' }).click();
+  assert.deepEqual(errors, []);
+  console.log(JSON.stringify({ passed: true, ...result, screenshots: 'test-results/voice' }));
+} catch (error) {
+  const page = await application.firstWindow();
+  console.error((await page.locator('body').innerText()).slice(0, 6000));
+  await page.screenshot({ path: 'test-results/voice/failure.png' });
+  throw error;
+} finally { await application.close(); }

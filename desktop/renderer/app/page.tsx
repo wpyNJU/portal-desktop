@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { AppModel } from "./models/app";
 import { useModel } from "../shared/hooks/use-model";
 import { useChatBridge } from "./hooks/use-chat-bridge";
@@ -17,12 +17,26 @@ import { Diagnostics } from "./components/diagnostics";
 import { Dialog } from "../shared/components/dialog";
 import { EditContextMenu } from "../shared/components/context-menu";
 import { PlaceHeading } from "./components/navigation";
+import { VoiceCall } from '../voice/models/call';
+import { VoiceCallDialog } from '../voice/page';
 import logo from "../../../resources/branding/logo.png";
 import logoWhite from "../../../resources/branding/logo-white.png";
 export function App({ model }: { model: AppModel }) {
   const app = useModel(model),
     frame = useRef<HTMLIFrameElement>(null);
   const themedLogo = app.theme === "dark" ? logoWhite : logo;
+  const [voiceModel] = useState(() => new VoiceCall(app.api?.voice));
+  const voice = useModel(voiceModel);
+  const startCall = () => {
+    if (!app.snapshot?.settings.hasToken) { app.showSettings(); return; }
+    void voice.start(app.snapshot.settings.endpoint, app.snapshot.chatScene?.scene_id || '',
+      app.town.displayName || app.snapshot.settings.being || 'Being');
+  };
+  useEffect(() => () => voice.dispose(), [voice]);
+  useEffect(() => {
+    if (voice.busy && (voice.endpoint !== app.snapshot?.settings.endpoint || voice.sceneId !== app.snapshot?.chatScene?.scene_id))
+      voice.end('连接或场景已切换，通话已结束');
+  }, [voice, app.snapshot?.settings.endpoint, app.snapshot?.chatScene?.scene_id]);
   useChatBridge(app, frame);
   useEffect(() => app.start(), [app]);
   useLayoutEffect(() => {
@@ -96,7 +110,7 @@ export function App({ model }: { model: AppModel }) {
       <main id="client-main" hidden={app.startup !== "ready"}>
         <div className="workspace-body">
           <div className="workspace-stage">
-            <Topbar model={app} />
+            <Topbar model={app} onCall={startCall} inCall={voice.busy} />
             <p
               id="startup-notice"
               className="startup-notice"
@@ -159,6 +173,7 @@ export function App({ model }: { model: AppModel }) {
           <Browser model={app} />
         </div>
       </main>
+      <VoiceCallDialog model={voice} onRetry={startCall} />
       <Diagnostics model={app} />
       <Dialog
         id="place-sheet"

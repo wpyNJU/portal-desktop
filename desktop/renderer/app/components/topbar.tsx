@@ -3,7 +3,8 @@ import type { AppModel } from "../models/app";
 import { useModel } from "../../shared/hooks/use-model";
 import { ChatSceneIndicator } from "./chat-scene";
 import { UpdateProgress } from "./update-progress";
-export function Topbar({ model }: { model: AppModel }) {
+import { PhoneIcon } from '../../voice/components/icons';
+export function Topbar({ model, onCall, inCall = false }: { model: AppModel; onCall: () => void; inCall?: boolean }) {
   const app = useModel(model);
   const town = useModel(model.town);
   const [expanded, setExpanded] = useState(false),
@@ -223,6 +224,11 @@ export function Topbar({ model }: { model: AppModel }) {
           <svg viewBox="0 0 24 24" aria-hidden="true">
             <path d="M20 11a8 8 0 0 0-14.9-3.9L3 9m0 0V4m0 5h5M4 13a8 8 0 0 0 14.9 3.9L21 15m0 0v5m0-5h-5" />
           </svg>
+        </button>
+        <button id="start-voice-call" type="button" className={`topbar-icon-button voice-call-trigger${inCall ? ' in-call' : ''}`}
+          aria-label={inCall ? '返回语音通话' : '发起语音通话'} title={inCall ? '返回语音通话' : '语音通话'}
+          aria-haspopup="dialog" aria-controls="voice-call" onClick={onCall}>
+          <PhoneIcon />
         </button>
         <details
           id="conversation-options"
