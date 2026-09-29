@@ -1,0 +1,19 @@
+[Unit]
+Description=Being voice web and gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=beingvoice
+Group=beingvoice
+WorkingDirectory=/opt/being-voice-web
+StateDirectory=being-voice-web
+UMask=0077
+ExecStart=/opt/being-voice-web/.venv/bin/python /opt/being-voice-web/serve.py --host 127.0.0.1 --port 22601 --data-dir /var/lib/being-voice-web
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

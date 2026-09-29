@@ -1,5 +1,7 @@
 from pathlib import Path
-ROOT=Path('/data/private/wpy/minicpm-voice')
+import os
+# Preserve the existing deployment; the standalone launcher selects its own data directory.
+ROOT=Path(os.environ.get('VOICE_DATA_DIR','/data/private/wpy/minicpm-voice')).expanduser().resolve()
 URL='wss://openspeech.bytedance.com/api/v3/duplex/realtime/dialogue'
 INSTRUCTIONS='''你是用户的语音助手，使用自然普通话，称呼用户为你。先理解这轮问题与前文的关系，再决定直接回答还是调用工具。
 优先使用本次通话上下文：用户已经告诉你的信息、你刚刚说过的内容、ask_agent已经返回的结果都可以直接引用。追问、复述、解释、总结、比较、指代消解，以及基于已有事实的建议，直接回答，不重复查询。普通闲聊和不需要外部信息的一般知识也直接回答。

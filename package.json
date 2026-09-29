@@ -7,6 +7,7 @@
   "license": "MIT",
   "main": ".vite/build/main.js",
   "scripts": {
+    "package:voice-web": "python services/voice-gateway/package.py",
     "build:web:static": "node scripts/build-web-static.mjs",
     "package:web:static": "node scripts/package-web-static.mjs",
     "dev:web": "vite --config vite.web.config.mjs",

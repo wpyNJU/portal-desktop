@@ -214,6 +214,7 @@ Loom 与 Town 凭据分别通过系统密钥库加密保存，配对码不落盘
 | 文档 | 内容 |
 | --- | --- |
 | [构建与交付](desktop/BUILDING.md) | 平台环境、安装包位置、构建故障与卸载 |
+| [语音网页版交付](services/voice-gateway/DEPLOYMENT.md) | 当前手机通话网页、豆包网关、部署包与 [完整流程图](services/voice-gateway/FLOW.md) |
 | [架构说明](desktop/ARCHITECTURE.md) | 进程、凭据、代理、Portal 与 Town 的实现边界 |
 | [测试说明](desktop/TESTING.md) | 分项命令、测试隔离、覆盖范围及验证记录 |
 | [Town SDK 接入](desktop/TOWN-SDK.md) | 配对、REST、SSE、发送与原生回复的协议对照 |
@@ -242,3 +243,5 @@ Loom 与 Town 凭据分别通过系统密钥库加密保存，配对码不落盘
 感谢 Loom、Heart Portal、[Beings Town](https://beings.town/) 与 [Town Client SDK](https://github.com/jeremyliu16/beings-town-client-sdk) 提供的基础能力，也感谢 [BeingDesktop](https://github.com/GuangCZ/BeingDesktop) 的开源实践与设计参考。来源及集成方式见 [UPSTREAM.md](UPSTREAM.md)。
 
 纯静态 OSS 包：运行 `npm run package:web:static`，输出 `out/town-web-oss.zip`。支持设置页添加到主屏幕，默认直连真实 Town 并直接配对，无域名检测或连接预验证，见 [OSS 部署说明](web/OSS.md)。
+
+独立的**语音通话网页版**位于 `services/voice-gateway`。运行 `npm run package:voice-web` 生成 `out/being-voice-web.zip`，包含手机界面、字体及许可、Python 网关、任务与播报流程文档和部署示例。运行需要 Python 3.11+、服务端豆包语音 API Key，以及用户自己的 Being 链接，见 [语音部署说明](services/voice-gateway/DEPLOYMENT.md)。

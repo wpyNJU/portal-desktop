@@ -1,0 +1,5 @@
+# Point this domain at the deployment host and allow TCP 80/443.
+# Install as your Caddy configuration after replacing the example domain.
+voice.example.com {
+    reverse_proxy 127.0.0.1:22601
+}

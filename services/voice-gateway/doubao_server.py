@@ -15,7 +15,9 @@ from voice_usage import UsageCapture,call_id as usage_call_id,write as write_usa
 from doubao_profile import fetch_profile,session_instructions,load_profile,save_profile,profile_updated_at
 
 profile_update_lock=asyncio.Lock()
-app=FastAPI();bridge=AgentBridge(ROOT/'agent-url.txt')
+ROOT.mkdir(parents=True,exist_ok=True)
+(ROOT/'logs').mkdir(exist_ok=True)
+app=FastAPI();bridge=AgentBridge(ROOT/'agent-url.txt') if (ROOT/'agent-url.txt').is_file() else None
 task_store=TaskStore(ROOT/'agent-tasks.sqlite3');task_store.recover()
 background_tasks=BackgroundTasks(task_store)
 
@@ -268,7 +270,7 @@ async def connection(ws:WebSocket):
                 await send_client({'type':'tasks.result',**data})
             except (ValueError,TypeError):await send_client({'type':'error','message':'任务记录不存在或参数无效'})
             return
-        legacy=agent_url==parse_endpoint(bridge.url)[0]
+        legacy=bool(bridge and agent_url==parse_endpoint(bridge.url)[0])
         profile_path=ROOT/('assistant-profile-'+scope+'.json')
         if legacy and not profile_path.exists():profile_path=ROOT/'assistant-profile.json'
         if initial_request.get('type')=='agent.configure':

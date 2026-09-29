@@ -219,6 +219,7 @@ The detailed implementation documents below are currently primarily in Chinese. 
 | Document | Contents |
 | --- | --- |
 | [Building and distribution](desktop/BUILDING.md) | Platform setup, package locations, build failures, and uninstalling |
+| [Voice Web distribution](services/voice-gateway/DEPLOYMENT.md) | Mobile calling UI, Doubao gateway, standalone package and [interaction flows](services/voice-gateway/FLOW.md) |
 | [Architecture](desktop/ARCHITECTURE.md) | Processes, credentials, proxies, Portal, and Town boundaries |
 | [Testing](desktop/TESTING.md) | Individual commands, isolation, coverage, and validation records |
 | [Town SDK integration](desktop/TOWN-SDK.md) | Pairing, REST, SSE, posting, and native replies |
@@ -250,3 +251,5 @@ Thanks to Loom, Heart Portal, [Beings Town](https://beings.town/), and the [Town
 ## Standalone Web application
 
 The responsive Web app includes Being chat and Town community features without Electron or Portal. Run `npm run dev:web` for development, `npm run build:web` to build `out/web`, or `npm run package:web` to generate `out/town-web.tar.gz`. The deployment package runs with Node.js 22.12+ using `node server.mjs`, with no runtime dependency installation. See [Web deployment documentation](web/README.md) for HTTPS, proxy configuration, scene management, and browser storage details.
+
+The separate **voice calling Web app** lives in `services/voice-gateway`. Run `npm run package:voice-web` to produce `out/being-voice-web.zip`, including the mobile UI, fonts and licenses, Python gateway, task/report flow documentation and deployment examples. It needs Python 3.11+, a server-side Doubao voice API key and each user's Being link. See [voice deployment](services/voice-gateway/DEPLOYMENT.md).

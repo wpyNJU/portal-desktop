@@ -3,10 +3,10 @@ import contextvars
 import json
 import logging
 import time
-from pathlib import Path
+from doubao_config import ROOT
 
 call_id = contextvars.ContextVar('usage_call_id', default='unlinked')
-PATH = Path('/data/private/wpy/minicpm-voice/logs/voice-usage.jsonl')
+PATH = ROOT/'logs/voice-usage.jsonl'
 
 
 def numeric(value):

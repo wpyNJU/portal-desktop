@@ -10,3 +10,10 @@ assistant-profile*.json
 logs/
 backups/
 deploy-*/
+data/
+mobile/self-test.wav
+doubao-api-key.txt
+agent-url.txt
+.env
+.env.*
+*.env

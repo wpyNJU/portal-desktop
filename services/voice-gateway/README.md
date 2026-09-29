@@ -2,6 +2,8 @@
 
 这里保存桌面与手机通话共用的 Python 语音服务源码，包含查询短标题、按主题提醒和统一语音输出控制。它是独立服务，不随 Electron 在用户电脑上启动。
 
+**完整网页版交付**：[打包与部署](DEPLOYMENT.md) · [流程图与状态说明](FLOW.md) · [第三方字体许可](THIRD_PARTY_NOTICES.md)。在仓库根目录运行 `npm run package:voice-web`，生成 `out/being-voice-web.zip`；解压安装依赖后运行 `python serve.py` 即可提供页面和 WebSocket。
+
 ## 同一通话的输出控制
 
 - `SpeechOutput` 统一管理豆包直接回复、查询过渡句和任务报告。同一时刻只允许一个输出来源；切换时先发送 `playback.clear` 清空客户端旧音频。
@@ -40,12 +42,12 @@
 python -m pip install -r services/voice-gateway/requirements.txt
 ```
 
-当前源码保留现网数据目录 `/data/private/wpy/minicpm-voice`：`doubao_config.py` 的 `ROOT` 控制凭据、资料与任务库路径；`voice_usage.py` 的 `PATH` 控制用量日志路径。迁移到其他目录时需同时调整这两处。
+旧入口保留现网数据目录 `/data/private/wpy/minicpm-voice`，可通过 `VOICE_DATA_DIR` 指定其他目录，凭据、资料、任务库和用量日志随之迁移到该路径。独立网页版的 `serve.py` 默认使用本目录下的 `data/`，支持 `--data-dir`，无需编辑源代码。
 
 由部署环境提供以下私有文件，不要放入 Git：
 
 - `doubao-api-key.txt`：豆包 API Key，仅服务器读取。
-- `agent-url.txt`：旧默认 Being 的完整 streaming 链接，包含 token，供启动及旧资料兼容使用。每个新连接仍须提供自己的 Being 链接并通过验证。
+- `agent-url.txt`：可选的旧默认 Being streaming 链接，包含 token，仅供旧资料兼容使用；新安装不需要。每个新连接仍须提供自己的 Being 链接并通过验证。
 - 运行时生成的 `agent-tasks.sqlite3`、`assistant-profile*.json` 和 `logs/`：查询结果、助手资料和用量数据，不属于源码。
 
 准备数据目录、私有配置和日志目录后启动：
@@ -56,7 +58,7 @@ python services/voice-gateway/doubao_server.py
 
 服务监听 `127.0.0.1:22601`，提供 `/health` 与 `/ws`。桌面使用 HTTPS 网关转发后的 `/pipeline/ws`；部署环境须提供 TLS、WebSocket 转发和适当的访问控制。此目录不包含现有反向代理，也不会自动替换线上进程。
 
-`mobile/index.html` 和 `mobile/call.js` 保存手机网页源码，现网分别部署为 `call.html` 和 `call-assets/call.js`；字体与测试录音仍由部署环境提供。手机采集按设备实际采样率重采样为 16 kHz、每帧 20 ms，与桌面保持一致。更新 HTML 中脚本版本以避开旧缓存；通话中不要替换客户端脚本。
+`mobile/index.html` 和 `mobile/call.js` 保存手机网页源码，现网分别部署为 `call.html` 和 `call-assets/call.js`。两份现网字体与 OFL 许可随包提供；测试录音不打包。手机采集按设备实际采样率重采样为 16 kHz、每帧 20 ms，与桌面保持一致。更新 HTML 中脚本版本以避开旧缓存；通话中不要替换客户端脚本。
 
 更新已有部署时先备份源码和 SQLite，等待通话及后台查询空闲，再重启语音服务。首次启动会迁移数据库；已有未完成任务由启动恢复逻辑处理。
 

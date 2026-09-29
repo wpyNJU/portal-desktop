@@ -212,7 +212,7 @@ async function startCall(test=false,profileAccepted=false){
   if(ctx.sampleRate!==16000)throw new Error('浏览器未支持16k音频，请换用最新版浏览器');
   const url=URL.createObjectURL(new Blob([worklet],{type:'text/javascript'}));try{await step(ctx.audioWorklet.addModule(url),10000,'音频组件加载超时，请刷新页面重试');check();}finally{URL.revokeObjectURL(url);}
   capture=new AudioWorkletNode(ctx,'voice-capture');sink=ctx.createGain();sink.gain.value=0;capture.connect(sink).connect(ctx.destination);
-  if(test){const b=await ctx.decodeAudioData(await(await fetch('/call-assets/self-test.wav')).arrayBuffer());source=ctx.createBufferSource();source.buffer=b;}
+  if(test){const recording=await fetch('/call-assets/self-test.wav');if(!recording.ok)throw new Error('未配置测试录音，请直接使用麦克风通话');const b=await ctx.decodeAudioData(await recording.arrayBuffer());source=ctx.createBufferSource();source.buffer=b;}
   else{status('请允许使用麦克风','准备通话');const request=navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true,channelCount:1},video:false});
    request.then(stream=>{if(generation!==callGeneration)stream.getTracks().forEach(t=>t.stop());},()=>{});
    mic=await step(request,25000,'麦克风授权未完成，请允许麦克风后重试');check();source=ctx.createMediaStreamSource(mic);}
