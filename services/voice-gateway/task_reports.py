@@ -4,9 +4,10 @@ STREAM_PENDING=object()
 from task_store import next_segment
 
 class TaskReports:
-    def __init__(self,store,scope,scheduler,client,speak):
+    def __init__(self,store,scope,scheduler,client,speak,output=None):
         self.store=store;self.scope=scope;self.scheduler=scheduler;self.client=client;self.speak=speak
         self.jobs={};self.closed=False;self.acks={};self.focus=store.resumable(scope);self.active_key=None
+        self.output=output;self.active_stop=None
     async def event(self,key):
         row=self.store.get(self.scope,key);row.pop('scope');row.pop('request',None);row['length']=len(row.pop('text'))
         await self.client({'type':'task.updated','task':row})
@@ -27,9 +28,10 @@ class TaskReports:
         async def output(d):
             if stop.is_set():return
             if d.get('type')=='opening.audio':
-                self.scheduler.update(playing=True)
+                if not self.output:self.scheduler.update(playing=True)
                 d={'type':'agent.audio.delta','call_id':key,'delta':d['delta']}
-            await self.client(d)
+            if self.output:await self.output.scheduled(d,stop)
+            else:await self.client(d)
         if frames is None:
             ok=await self.speak(text,output,stop,lambda:not self.closed and not stop.is_set())
         else:
@@ -40,7 +42,10 @@ class TaskReports:
         if not ok or stop.is_set():return False
         token=uuid.uuid4().hex;future=asyncio.get_running_loop().create_future();self.acks[token]=future
         try:
-            await self.client({'type':'task.segment.end','task_id':key,'token':token})
+            event={'type':'task.segment.end','task_id':key,'token':token}
+            if self.output:
+                if not await self.output.scheduled(event,stop):return False
+            else:await self.client(event)
             await asyncio.wait_for(future,45)
             return not stop.is_set()
         finally:self.acks.pop(token,None)
@@ -79,6 +84,8 @@ class TaskReports:
         async def read(stop):
             nonlocal stream_gap
             self.active_key=key
+            self.active_stop=stop
+            if self.output and not await self.output.begin_scheduled(stop):return
             self.store.update(self.scope,key,delivery='reporting');await self.event(key)
             row=self.store.get(self.scope,key)
             title=row['title']
@@ -121,6 +128,8 @@ class TaskReports:
             if not complete and not self.closed:
                 async def ask(stop):
                     self.active_key=key
+                    self.active_stop=stop
+                    if self.output and not await self.output.begin_scheduled(stop):return
                     self.focus=key
                     self.store.update(self.scope,key,delivery='asking');await self.event(key)
                     title=self.store.get(self.scope,key)['title']
@@ -133,7 +142,9 @@ class TaskReports:
             raise
         except Exception:
             if self.active_key==key:
-                await self.client({'type':'playback.clear'});self.scheduler.update(playing=False);self.active_key=None
+                if self.output:await self.output.clear_scheduled(self.active_stop)
+                else:await self.client({'type':'playback.clear'});self.scheduler.update(playing=False)
+                self.active_key=None
             self.store.update(self.scope,key,delivery='paused');await self.event(key)
             await self.client({'type':'agent.status','text':'报告音频暂时不可用，全文和播放位置已保存，可点击继续报告重试'})
     async def defer(self,key):
@@ -141,8 +152,9 @@ class TaskReports:
         self.store.update(self.scope,key,delivery='deferred')
         if self.active_key==key:
             self.scheduler.interrupt()
-            await self.client({'type':'playback.clear'})
-            self.scheduler.update(playing=False);self.active_key=None
+            if self.output:await self.output.clear_scheduled(self.active_stop)
+            else:await self.client({'type':'playback.clear'});self.scheduler.update(playing=False)
+            self.active_key=None
         job=self.jobs.get(key)
         if job and not job.done():
             job.cancel();await asyncio.gather(job,return_exceptions=True)

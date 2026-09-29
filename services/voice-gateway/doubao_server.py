@@ -8,6 +8,7 @@ from task_store import TaskStore
 from background_tasks import BackgroundTasks
 from task_reports import TaskReports
 from turn_scheduler import TurnScheduler,result_notice,IdleCallTimer
+from speech_output import SpeechOutput
 from conversation_memory import normalize_history,history_instructions
 from doubao_config import ROOT,URL,headers,create_session,VOICES,DEFAULT_VOICE
 from voice_usage import UsageCapture,call_id as usage_call_id,write as write_usage
@@ -85,8 +86,9 @@ class ToolCalls:
         self.response_ready=asyncio.Event();self.opening_stops=[];self.queries={};self.relays=set();self.scheduler=TurnScheduler()
         self.context=context if context is not None else {'scene':'voice-'+str(uuid.uuid4())}
         self.scope=self.context.get('scope',self.context['scene']);self.task_ids={}
+        self.audio=SpeechOutput(self.scheduler,self.client)
         async def speak(text,client,stop,valid):return await speak_opening(text,client,stop,valid,voice=self.voice)
-        self.reports=TaskReports(task_store,self.scope,self.scheduler,self.client,speak)
+        self.reports=TaskReports(task_store,self.scope,self.scheduler,self.client,speak,output=self.audio)
     def interrupt(self,cancel_queries=False):
         self.scheduler.interrupt()
         for opening_stop in self.opening_stops:opening_stop.set()
@@ -148,11 +150,11 @@ class ToolCalls:
                     acknowledgement=args.get('acknowledgement','')
                     if not isinstance(acknowledgement,str) or not 5<=len(acknowledgement)<=60:acknowledgement='我去了解一下这件事，你可以继续和我聊。'
                     async def opening(audio_stop):
+                        if not await self.audio.begin_scheduled(audio_stop):return
                         await self.client({'type':'agent.opening','text':acknowledgement})
                         async def output(d):
                             if audio_stop.is_set():return
-                            if d.get('type')=='opening.audio':self.scheduler.update(playing=True)
-                            await self.client(d)
+                            await self.audio.scheduled(d,audio_stop)
                         await speak_opening(acknowledgement,output,audio_stop,lambda:not self.closed,voice=self.voice)
                     await self.scheduler.deliver(opening)
                 while task_store.get(self.scope,key)['state']=='running':
@@ -299,14 +301,16 @@ async def connection(ws:WebSocket):
             usage_started=time.monotonic();write_usage('call_started')
             await send_client(initial)
             logger.info('ready id=%s elapsed=%.2f',connection_id,time.monotonic()-started_at)
-            current_question=None;previous_question=None;turn_interrupted=False;blocked=set();tool_questions={};streamed_questions=set();voice_text=[]
+            current_question=None;previous_question=None;turn_interrupted=False;blocked=set();tool_questions={};streamed_questions=set();voice_text={}
             async def send_tool_result(data):
                 # The provider may attach a tool continuation to its original question.
                 # New speech may stop playback, but must not hide a completed query.
                 for item in data.get('items',[]):
                     if any(c.get('text','').startswith('[语音端已逐句显示并播报') for c in item.get('content',[])):
                         question=tool_questions.get(item.get('call_id'))
-                        if question:streamed_questions.add(question)
+                        if question:
+                            streamed_questions.add(question)
+                            await tools.audio.block(question=question)
                 await send_up(data)
             async def task_client(data):
                 if data.get('type')=='task.updated' and data['task']['delivery'] in ('asking','awaiting_choice','reported','deferred'):
@@ -323,12 +327,13 @@ async def connection(ws:WebSocket):
             async def downstream():
                 nonlocal current_question,previous_question,turn_interrupted
                 async for raw in remote:
-                    d=json.loads(raw);usage.observe(d);kind=d.get('type','')
+                    d=json.loads(raw);usage.observe(d);d=tools.audio.observe(d);kind=d.get('type','')
                     if kind=='conversation.item.input_audio_transcription.started':
                         tools.scheduler.update(user=True,generating=False)
                         previous_question=current_question;current_question=d.get('item_id');turn_interrupted=False
+                        voice_text.clear()
                         tools.interrupt()
-                        await send_client({'type':'playback.clear'})
+                        await tools.audio.user_started(current_question)
                     if kind in ('conversation.item.input_audio_transcription.delta','conversation.item.input_audio_transcription.completed'):
                         if kind.endswith('.delta'):tools.scheduler.update(user=True)
                         spoken=d.get('delta') or d.get('text') or ''
@@ -340,10 +345,19 @@ async def connection(ws:WebSocket):
                         tools.scheduler.update(user=False,generating=True)
                         if isinstance(d.get('text'),str):context['history']=normalize_history(context['history']+[{'role':'user','text':d['text']}])
                     if kind=='conversation.item.input_audio_transcription.failed':tools.scheduler.update(user=False,generating=False)
-                    if kind in ('response.done','response.canceled'):tools.scheduler.update(generating=False)
                     if kind=='response.function_call_arguments.done':
                         tools.scheduler.update(generating=False)
                         items=d.get('items',[])
+                        # Hand-off owns this turn immediately, including the provider's acknowledgement.
+                        handled=any(i.get('name') in ('ask_agent','end_call') for i in items)
+                        for item in items:
+                            if item.get('name')=='saved_task':
+                                try:handled=handled or json.loads(item.get('arguments','{}')).get('action') in ('continue','replay')
+                                except (ValueError,TypeError,AttributeError):pass
+                        if handled:
+                            question=d.get('question_id') or current_question
+                            if question:streamed_questions.add(question)
+                            await tools.audio.block(d,question=question)
                         goodbye=next((i for i in items if i.get('name')=='end_call'),None)
                         if goodbye:
                             tools.interrupt(cancel_queries=True)
@@ -353,21 +367,26 @@ async def connection(ws:WebSocket):
                             if not isinstance(farewell,str) or not 1<=len(farewell)<=40:farewell='再见，下次聊。'
                             await send_client({'type':'call.ending','text':farewell})
                             await send_up({'type':'input_audio_mute.commit'})
-                            await speak_opening(farewell,send_client,threading.Event(),lambda:True,voice=voice)
+                            farewell_stop=threading.Event()
+                            await tools.audio.begin_scheduled(farewell_stop)
+                            async def farewell_output(event):await tools.audio.scheduled(event,farewell_stop)
+                            await speak_opening(farewell,farewell_output,farewell_stop,lambda:True,voice=voice)
                             await send_client({'type':'call.end'})
                             continue
                         for item in items:tool_questions[item.get('call_id')]=d.get('question_id') or current_question
                         tools.submit(items);continue
                     if kind.startswith('response.output_') and d.get('question_id') in (blocked|streamed_questions):continue
-                    if kind=='response.output_text.delta':voice_text.append(d.get('delta',''))
-                    if kind=='response.done' and voice_text:
-                        context['history']=normalize_history(context['history']+[{'role':'assistant','text':''.join(voice_text)}]);voice_text.clear()
+                    if kind.startswith('response.') and tools.audio.is_blocked(d):continue
+                    if kind=='response.output_text.delta':voice_text.setdefault(d.get('response_id') or current_question,[]).append(d.get('delta',''))
+                    if kind=='response.done':
+                        completed=voice_text.pop(d.get('response_id') or current_question,[])
+                        if completed:context['history']=normalize_history(context['history']+[{'role':'assistant','text':''.join(completed)}])
                     if kind=='response.output_audio.delta':
-                        tools.response_ready.set();tools.scheduler.update(generating=True,playing=True)
+                        tools.response_ready.set()
                     if kind=='error':
                         logging.warning('doubao_error code=%s',d.get('error',{}).get('code') if isinstance(d.get('error'),dict) else d.get('code'))
                         await send_client({'type':'error','message':'豆包语音返回错误，请重新开始通话'});continue
-                    await send_client(d)
+                    if await tools.audio.provider(d,observed=True):await send_client(d)
                     if kind=='session.closed':return
             receiving=asyncio.create_task(downstream())
             async def upstream():
@@ -394,11 +413,11 @@ async def connection(ws:WebSocket):
                             await send_client({'type':'agent.status','text':message})
                         except ValueError:await send_client({'type':'agent.status','text':'没有找到这条任务'})
                     elif kind=='client.playback':
-                        tools.scheduler.update(playing=data.get('playing') is True)
+                        tools.audio.playback(data)
                     elif kind=='response.cancel':
                         tools.interrupt()
                         if current_question:blocked.add(current_question)
-                        await send_client({'type':'playback.clear'});await send_up({'type':kind})
+                        await tools.audio.user_started();await send_up({'type':kind})
                     elif kind=='client.diagnostic':
                         if data.get('reason')=='audio_backpressure':
                             amount=data.get('buffered_bytes')

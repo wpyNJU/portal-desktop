@@ -4,9 +4,11 @@ from turn_scheduler import TurnScheduler,result_notice
 from task_store import TaskStore
 from task_reports import TaskReports
 from background_tasks import BackgroundTasks
+from speech_output import SpeechOutput
 source=ast.parse(Path(__file__).with_name('doubao_server.py').read_text(encoding='utf-8'))
 ns=dict(asyncio=asyncio,json=json,re=re,time=time,threading=threading,logger=logging.getLogger('test'),DEFAULT_VOICE='test',bridge=None,TurnScheduler=TurnScheduler,result_notice=result_notice,TaskReports=TaskReports,task_store=TaskStore(':memory:'))
 ns['background_tasks']=BackgroundTasks(ns['task_store'])
+ns['SpeechOutput']=SpeechOutput
 exec(compile(ast.Module(body=[n for n in source.body if isinstance(n,(ast.ClassDef,ast.FunctionDef)) and n.name in ('ToolCalls','query_identity')],type_ignores=[]),'<test>','exec'),ns,ns)
 Tool=ns['ToolCalls'];identity=ns['query_identity'];original_run=Tool.run
 def item(i,text):return {'call_id':i,'name':'ask_agent','arguments':json.dumps({'message':text})}

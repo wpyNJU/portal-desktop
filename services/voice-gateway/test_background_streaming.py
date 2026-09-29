@@ -4,6 +4,7 @@ from background_tasks import BackgroundTasks
 from task_store import TaskStore
 from task_reports import TaskReports
 from turn_scheduler import TurnScheduler
+from speech_output import SpeechOutput
 
 async def main():
     store=TaskStore(':memory:');manager=BackgroundTasks(store,timeout=3)
@@ -18,7 +19,7 @@ async def main():
         await client({'type':'opening.audio','delta':text});return True
     namespace=dict(asyncio=asyncio,json=json,re=re,time=time,threading=threading,logger=logging.getLogger('test'),
                    DEFAULT_VOICE='test',background_tasks=manager,bridge=bridge,TurnScheduler=TurnScheduler,
-                   TaskReports=TaskReports,task_store=store,speak_opening=speak)
+                   TaskReports=TaskReports,SpeechOutput=SpeechOutput,task_store=store,speak_opening=speak)
     tree=ast.parse(Path(__file__).with_name('doubao_server.py').read_text(encoding='utf-8'))
     exec(compile(ast.Module(body=[n for n in tree.body if isinstance(n,(ast.ClassDef,ast.FunctionDef)) and n.name in ('ToolCalls','query_identity')],type_ignores=[]),'<test>','exec'),namespace)
     Tool=namespace['ToolCalls']
