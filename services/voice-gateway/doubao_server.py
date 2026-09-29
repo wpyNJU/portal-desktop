@@ -102,6 +102,7 @@ class ToolCalls:
         for task,stop in self.pending:stop.set()
     async def watch(self):
         offsets={};versions={};finished=set();last_progress={}
+        restored_finished={r['id'] for r in task_store.watchable(self.scope) if task_store.get(self.scope,r['id'])['state']!='running'}
         labels={'queued':'Agent 已接收，仍在等待回复','accepted':'Agent 已接收请求','thinking':'正在分析你的问题','tool':'正在调用工具获取信息','text':'正在生成回答'}
         while not self.closed:
             tracked={r['id'] for r in task_store.watchable(self.scope)}|set(offsets)
@@ -131,7 +132,16 @@ class ToolCalls:
                 if row['state']!='running' and key not in finished:
                     finished.add(key)
                     if attached:
-                        await self.client({'type':'agent.text.done' if row['state']=='completed' else 'agent.text.error','call_id':key,'message':'查询未完整结束，已保留收到的内容，未自动重试'})
+                        restored=key in restored_finished
+                        if row['state']=='completed':message='历史查询结果已恢复' if restored else '查询结果已返回'
+                        else:
+                            outcome='中断' if row['state']=='interrupted' else '失败'
+                            message=('历史查询' if restored else '本次查询')+outcome
+                            message+='，已保存部分正文' if row['text'] else '，未收到正文'
+                            message+='；本次连接未重新查询' if restored else '，未自动重试'
+                        await self.client({'type':'agent.text.done' if row['state']=='completed' else 'agent.text.error',
+                            'call_id':key,'task_id':key,'title':row['title'],'state':row['state'],
+                            'restored':restored,'created_at':row['created'],'message':message})
                     if not row['text'] and row['delivery']=='waiting':
                         self.reports.start(key,notice=True,requested=False)
             await asyncio.sleep(.25)
