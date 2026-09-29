@@ -8,6 +8,7 @@ class TaskReports:
         self.store=store;self.scope=scope;self.scheduler=scheduler;self.client=client;self.speak=speak
         self.jobs={};self.closed=False;self.acks={};self.focus=store.resumable(scope);self.active_key=None
         self.output=output;self.active_stop=None
+        self.attempts={}
     async def event(self,key):
         row=self.store.get(self.scope,key);row.pop('scope');row.pop('request',None);row['length']=len(row.pop('text'))
         await self.client({'type':'task.updated','task':row})
@@ -17,16 +18,17 @@ class TaskReports:
         if requested:
             self.store.touch(self.scope,key);self.focus=key
         if key in self.jobs and not self.jobs[key].done():
-            if row['delivery'] in ('asking','awaiting_choice'):self.jobs[key].cancel()
+            if row['delivery'] in ('paused','asking','awaiting_choice'):self.jobs[key].cancel()
             else:return '报告已经在进行或排队'
         if not notice and not row['text'] and row['state']!='running':return '任务尚未返回可报告的正文，请查看任务状态'
         if not notice and not restart and row['state']!='running' and row['cursor']>=len(row['text']):return '这份报告已经读完，如需再次收听请选择从头报告'
         if restart:self.store.update(self.scope,key,cursor=0)
+        self.attempts[key]=self.attempts.get(key,0)+1
         announce=row['delivery']!='waiting' or row['cursor']==0 or restart or row['state'] not in ('completed','running')
         self.store.update(self.scope,key,delivery='pending')
         task=asyncio.create_task(self.report(key,announce=announce));self.jobs[key]=task
         return '已安排完整报告，将在空闲时从保存的位置继续'
-    async def say(self,key,text,stop,frames=None):
+    async def say(self,key,text,stop,frames=None,end=None):
         async def output(d):
             if stop.is_set():return
             if d.get('type')=='opening.audio':
@@ -42,7 +44,11 @@ class TaskReports:
                 if stop.is_set():return False
                 await output(frame)
         if not ok or stop.is_set():return False
-        token=uuid.uuid4().hex;future=asyncio.get_running_loop().create_future();self.acks[token]=future
+        token=uuid.uuid4().hex;future=asyncio.get_running_loop().create_future()
+        self.prune_acks()
+        receipt={'future':future,'key':key,'end':end,'attempt':self.attempts.get(key),
+                 'expires':float('inf'),'played':False}
+        self.acks[token]=receipt
         try:
             event={'type':'task.segment.end','task_id':key,'token':token}
             if self.output:
@@ -50,10 +56,30 @@ class TaskReports:
             else:await self.client(event)
             await asyncio.wait_for(future,45)
             return not stop.is_set()
-        finally:self.acks.pop(token,None)
+        finally:
+            # Playback completion and provider speech detection travel on
+            # different connections. Accept a short-lived receipt for a segment
+            # actually heard before interruption, even if cancellation won first.
+            if end is None:self.acks.pop(token,None)
+            else:receipt['expires']=time.monotonic()+3
+    def prune_acks(self):
+        now=time.monotonic()
+        self.acks={token:r for token,r in self.acks.items() if r['expires']>now}
     def acknowledge(self,token):
-        future=self.acks.get(token)
-        if future is not None and not future.done():future.set_result(True)
+        self.prune_acks();receipt=self.acks.get(token)
+        if receipt is None or receipt['played']:return
+        future,key,end=receipt['future'],receipt['key'],receipt['end']
+        if receipt['attempt']!=self.attempts.get(key):return
+        receipt['played']=True
+        # Commit in the acknowledgement handler. A user turn may cancel the
+        # report coroutine before it resumes from await, even at the final word.
+        if end is not None:
+            row=self.store.get(self.scope,key)
+            if row['cursor']<end:self.store.update(self.scope,key,cursor=end)
+        if not future.done():future.set_result(True)
+    def unread(self,key):
+        row=self.store.get(self.scope,key)
+        return row['state']=='running' or row['cursor']<len(row['text'])
     async def report(self,key,announce=True):
         await self.event(key)
         stream_gap=False;yielded=False
@@ -116,9 +142,9 @@ class TaskReports:
                     end,frames=result
                     # Prepare exactly one following segment while this segment is playing.
                     prepared=asyncio.create_task(prepare(end,stop))
-                    if frames and not await self.say(key,'',stop,frames=frames):raise RuntimeError('audio unavailable')
+                    if frames and not await self.say(key,'',stop,frames=frames,end=end):raise RuntimeError('audio unavailable')
                     if stop.is_set():return
-                    self.store.update(self.scope,key,cursor=end)
+                    if not frames:self.store.update(self.scope,key,cursor=end)
             finally:
                 if prepared:
                     if not prepared.done():prepared.cancel()
@@ -143,9 +169,11 @@ class TaskReports:
                     self.store.update(self.scope,key,delivery='asking');await self.event(key)
                     title=self.store.get(self.scope,key)['title']
                     await self.say(key,f'关于{title}，刚才还没讲完，你还要继续听吗？',stop)
-                await self.scheduler.deliver(ask,priority=lambda:self.priority(key,0))
+                asked=await self.scheduler.deliver(ask,priority=lambda:self.priority(key,0),valid=lambda:self.unread(key))
                 if self.active_key==key:self.active_key=None
-                if not self.closed:self.store.update(self.scope,key,delivery='awaiting_choice');await self.event(key)
+                if not self.closed:
+                    self.store.update(self.scope,key,delivery='reported' if not self.unread(key) else 'awaiting_choice' if asked else 'paused')
+                    await self.event(key)
         except asyncio.CancelledError:
             if self.jobs.get(key) is asyncio.current_task() and self.store.get(self.scope,key)['delivery']!='deferred':self.store.update(self.scope,key,delivery='paused')
             raise

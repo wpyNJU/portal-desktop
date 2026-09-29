@@ -86,6 +86,15 @@ test('stop clears the startup deadline and drops late socket callbacks', () => {
   service.stop(); late({ data: '{"type":"session.created"}' }); vi.advanceTimersByTime(60000);
   expect(events.map(event => event.data.type)).toEqual(['call.closed']);
 });
+
+test('playback generation survives IPC validation and invalid values are rejected', () => {
+  const { service, socket, input } = setup(); service.start(input);
+  service.send(input.callId, { type: 'client.playback', playing: false, generation: 7 });
+  expect(JSON.parse(socket.send.mock.calls.at(-1)![0])).toEqual({ type: 'client.playback', playing: false, generation: 7 });
+  for (const generation of [-1, NaN, 1.2])
+    expect(() => service.send(input.callId, { type: 'client.playback', playing: false, generation })).toThrow();
+  service.stop();
+});
 test('only the trusted main frame may request microphone access', () => {
   const url = 'beings://desktop/';
   expect(allowVoicePermission(true, 'media', true, url, url, ['audio'])).toBe(true);

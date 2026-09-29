@@ -5,7 +5,8 @@ export class CallAudio {
   private source?: MediaStreamAudioSourceNode;
   private sink?: GainNode;
   private sources = new Set<AudioBufferSourceNode>();
-  private tokens: string[] = [];
+  private tokens: { token: string; end: number }[] = [];
+  private playbackEpoch = 0;
   private next = 0;
   private closed = false;
   enabled = false;
@@ -49,17 +50,28 @@ export class CallAudio {
     for (let i = 0; i < samples.length; i++) channel[i] = Number.isFinite(samples[i]) ? Math.max(-1, Math.min(1, samples[i])) : 0;
     const node = context.createBufferSource(); node.buffer = buffer; node.connect(context.destination);
     const wasPlaying = this.busy; this.sources.add(node);
+    const epoch = this.playbackEpoch;
     this.next = Math.max(this.next, context.currentTime + .035);
     node.start(this.next); this.next += buffer.duration;
     if (!wasPlaying) this.playing(true);
     node.onended = () => {
       node.disconnect(); this.sources.delete(node);
-      if (!this.busy && !this.closed) { this.confirm(); this.playing(false); this.drained(); }
+      if (epoch !== this.playbackEpoch) return;
+      this.confirm();
+      if (!this.busy && !this.closed) { this.playing(false); this.drained(); }
     };
   }
-  segment(token: string) { this.tokens.push(token); if (!this.busy) this.confirm(); }
-  private confirm() { for (const token of this.tokens.splice(0)) this.acknowledge(token); }
+  segment(token: string) { this.tokens.push({ token, end: this.next }); this.confirm(); }
+  private confirm() {
+    const now = this.context?.currentTime ?? 0;
+    const complete = this.tokens.filter(item => item.end <= now);
+    this.tokens = this.tokens.filter(item => item.end > now);
+    for (const { token } of complete) this.acknowledge(token);
+  }
   clear() {
+    // Audio can have ended before its JS onended callback gets CPU time.
+    // Preserve only physically completed segments, never a partially heard one.
+    this.confirm(); this.playbackEpoch++;
     this.tokens = [];
     for (const node of this.sources) { node.onended = null; try { node.stop(); } catch { /* Already ended. */ } node.disconnect(); }
     this.sources.clear(); this.next = this.context?.currentTime || 0; this.playing(false);

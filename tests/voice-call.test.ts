@@ -12,13 +12,14 @@ function setup() {
   const api: VoiceAPI = { profile: vi.fn().mockResolvedValue({ updatedAt: '2026-09-17T10:56:24Z' }), start: vi.fn().mockResolvedValue(undefined), send: vi.fn().mockResolvedValue(undefined), stop: vi.fn().mockResolvedValue(undefined),
     onEvent: callback => { listeners.add(callback); return () => { listeners.delete(callback); }; } };
   const audio = { open: vi.fn().mockResolvedValue(undefined), close: vi.fn(), clear: vi.fn(), play: vi.fn(), segment: vi.fn(), setEnabled: vi.fn(), busy: false };
-  const model = new VoiceCall(api, () => audio as unknown as CallAudio);
+  let drained = () => {};
+  const model = new VoiceCall(api, (...args) => { drained = args[3]; return audio as unknown as CallAudio; });
   const start = () => model.start('https://example.com/being', 'desktop-fixture', 'being');
   const event = (type: string, data: Record<string, unknown> = {}) => {
     const input = vi.mocked(api.start).mock.calls.at(-1)![0];
     for (const listener of listeners) listener({ callId: input.callId, data: { type, ...data } });
   };
-  return { model, audio, api, start, event, listeners };
+  return { model, audio, api, start, event, listeners, drained: () => drained() };
 }
 afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
 test('call is active only after microphone and service are ready, repeated clicks do not redial', async () => {
@@ -44,6 +45,24 @@ test('transport errors stay visible and retry creates a fresh call', async () =>
   const { model, start, event, api } = setup(); await start(); event('error', { message: '网络已断开' });
   expect(model.phase).toBe('error'); expect(model.status).toBe('网络已断开'); expect(model.open).toBe(true);
   await start(); expect(api.start).toHaveBeenCalledTimes(2); model.dispose();
+});
+
+test('late audio and segment markers from an old generation cannot enter a newer reply', async () => {
+  const { model, start, event, audio } = setup(); await start(); event('session.created');
+  event('playback.clear', { generation: 3 });
+  event('response.output_audio.delta', { generation: 3, delta: 'new' });
+  event('agent.audio.delta', { generation: 2, delta: 'old' });
+  event('task.segment.end', { generation: 2, token: 'old-token' });
+  event('playback.clear', { generation: 2 });
+  expect(audio.play.mock.calls).toEqual([['new']]); expect(audio.segment).not.toHaveBeenCalled();
+  model.dispose();
+});
+
+test('generation completion does not claim audible playback has finished', async () => {
+  const { model, start, event, audio, drained } = setup(); await start(); event('session.created');
+  audio.busy = true; model.status = '正在回应你'; event('response.done');
+  expect(model.status).toBe('正在回应你');
+  audio.busy = false; drained(); expect(model.status).toBe('我在听，你可以继续说'); model.dispose();
 });
 test('agent replay offsets do not duplicate the stored answer', async () => {
   const { model, start, event } = setup(); await start(); event('session.created');

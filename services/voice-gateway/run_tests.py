@@ -5,6 +5,7 @@ import sys
 
 root=Path(__file__).resolve().parent
 tests=(
+    'test_barge_in.py',
     'test_report_priority.py',
     'test_agent_handoff.py',
     'test_speech_output.py',

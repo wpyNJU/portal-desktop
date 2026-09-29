@@ -13,7 +13,7 @@ export interface VoiceEvent { callId: string; data: { type: string; [key: string
 export type VoiceCommand =
   | { type: 'input_audio_buffer.append'; audio: string }
   | { type: 'input_audio_mute.commit' | 'input_audio_unmute.commit' | 'response.cancel' }
-  | { type: 'client.playback'; playing: boolean }
+  | { type: 'client.playback'; playing: boolean; generation?: number }
   | { type: 'task.segment.played'; token: string };
 export interface VoiceAPI {
   profile(endpoint: string, refresh?: boolean): Promise<VoiceProfile>;

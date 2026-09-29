@@ -332,25 +332,35 @@ async def connection(ws:WebSocket):
             tools.watcher=asyncio.create_task(tools.watch())
             async def downstream():
                 nonlocal current_question,previous_question,turn_interrupted
+                finished_inputs=set();input_open=False
                 async for raw in remote:
                     d=json.loads(raw);usage.observe(d);d=tools.audio.observe(d);kind=d.get('type','')
-                    if kind=='conversation.item.input_audio_transcription.started':
+                    if kind.startswith('conversation.item.input_audio_transcription.') and d.get('item_id') in finished_inputs:continue
+                    spoken=d.get('delta') or d.get('text') or ''
+                    is_transcript=kind in ('conversation.item.input_audio_transcription.delta','conversation.item.input_audio_transcription.completed')
+                    begins_input=(kind=='conversation.item.input_audio_transcription.started' or
+                                  (is_transcript and isinstance(spoken,str) and bool(spoken.strip())))
+                    if begins_input and (not turn_interrupted or (d.get('item_id') and d['item_id']!=current_question) or
+                                         (not d.get('item_id') and not input_open)):
                         tools.scheduler.update(user=True,generating=False)
-                        previous_question=current_question;current_question=d.get('item_id');turn_interrupted=False
+                        previous_question=current_question;current_question=d.get('item_id');turn_interrupted=True
+                        input_open=True
+                        if previous_question:finished_inputs.add(previous_question)
                         voice_text.clear()
+                        if previous_question:blocked.add(previous_question)
                         tools.interrupt()
                         await tools.audio.user_started(current_question)
-                    if kind in ('conversation.item.input_audio_transcription.delta','conversation.item.input_audio_transcription.completed'):
+                    if is_transcript:
                         if kind.endswith('.delta'):tools.scheduler.update(user=True)
-                        spoken=d.get('delta') or d.get('text') or ''
-                        if isinstance(spoken,str) and spoken.strip() and not turn_interrupted:
-                            turn_interrupted=True
-                            if previous_question:blocked.add(previous_question)
-                            tools.interrupt()
                     if kind=='conversation.item.input_audio_transcription.completed':
+                        input_open=False
+                        if d.get('item_id'):finished_inputs.add(d['item_id'])
                         tools.scheduler.update(user=False,generating=True)
                         if isinstance(d.get('text'),str):context['history']=normalize_history(context['history']+[{'role':'user','text':d['text']}])
-                    if kind=='conversation.item.input_audio_transcription.failed':tools.scheduler.update(user=False,generating=False)
+                    if kind=='conversation.item.input_audio_transcription.failed':
+                        input_open=False
+                        if d.get('item_id'):finished_inputs.add(d['item_id'])
+                        tools.scheduler.update(user=False,generating=False)
                     if kind=='response.function_call_arguments.done':
                         tools.scheduler.update(generating=False)
                         items=d.get('items',[])

@@ -111,7 +111,10 @@ export class VoiceService {
         if (typeof command.audio !== 'string' || !/^[A-Za-z0-9+/]{854}==$/.test(command.audio) || Buffer.from(command.audio, 'base64').length !== 640)
           throw new Error('无效的音频帧。');
         data = { type: command.type, audio: command.audio }; break;
-      case 'client.playback': data = { type: command.type, playing: command.playing === true }; break;
+      case 'client.playback':
+        if (command.generation !== undefined && (!Number.isSafeInteger(command.generation) || command.generation < 0))
+          throw new Error('无效的播放轮次。');
+        data = { type: command.type, playing: command.playing === true, generation: command.generation }; break;
       case 'task.segment.played':
         if (typeof command.token !== 'string' || command.token.length > 256) throw new Error('无效的播放确认。');
         data = { type: command.type, token: command.token }; break;

@@ -25,6 +25,8 @@ export class VoiceCall extends Store {
   private requests = 0;
   private records = new Map<string, VoiceRecord>();
   private response = '';
+  private playbackGeneration?: number;
+  private replyComplete = false;
   private history = new VoiceHistoryStore();
   constructor(private api?: VoiceAPI, private createAudio: (...args: ConstructorParameters<typeof CallAudio>) => CallAudio = (...args) => new CallAudio(...args)) {
     super();
@@ -50,6 +52,8 @@ export class VoiceCall extends Store {
     this.endpoint = endpoint; this.sceneId = sceneId; this.heard = ''; this.answer = ''; this.elapsed = 0;
     this.muted = false; this.speaking = false; this.connected = false; this.audioReady = false; this.ending = false;
     this.cacheNotice = ''; this.response = ''; this.records.clear(); this.requests = 0;
+    this.playbackGeneration = undefined;
+    this.replyComplete = false;
     this.profileUpdatedAt = null; this.profileMessage = ''; this.profileState = 'loading';
     const id = this.id = crypto.randomUUID();
     this.changed();
@@ -114,9 +118,13 @@ export class VoiceCall extends Store {
       if (this.id !== id) { void this.api.stop(id); return; }
       const audio = this.audio = this.createAudio(
         data => { if (this.id === id && this.phase === 'active' && !this.muted) this.send({ type: 'input_audio_buffer.append', audio: data }); },
-        playing => { if (this.id === id) { this.speaking = playing; this.send({ type: 'client.playback', playing }); this.changed(); } },
+        playing => { if (this.id === id) { this.speaking = playing; this.send({ type: 'client.playback', playing, generation: this.playbackGeneration }); this.changed(); } },
         token => { if (this.id === id) this.send({ type: 'task.segment.played', token }); },
-        () => { if (this.id === id && this.ending) this.end(); },
+        () => {
+          if (this.id !== id) return;
+          if (this.ending) this.end();
+          else if (this.replyComplete && this.phase === 'active') { this.status = '我在听，你可以继续说'; this.changed(); }
+        },
         () => { if (this.id === id) this.fail('麦克风已断开，请重新连接设备后再试。'); });
       this.status = '正在启用麦克风…'; this.changed();
       await audio.open();
@@ -160,6 +168,13 @@ export class VoiceCall extends Store {
   private receive(data: VoiceEvent['data']) {
     const text = (field: string) => typeof data[field] === 'string' ? data[field] as string : '';
     try {
+      if (typeof data.generation === 'number' && Number.isSafeInteger(data.generation)) {
+        if (this.playbackGeneration !== undefined && data.generation < this.playbackGeneration) return;
+        if (data.generation !== this.playbackGeneration) {
+          // Finish the old queue using its generation before adopting the new one.
+          this.replyComplete = false; this.audio?.clear(); this.playbackGeneration = data.generation;
+        }
+      }
       switch (data.type) {
         case 'session.created': this.connected = true; this.activate(); break;
         case 'session.status': if (this.phase === 'connecting') this.status = '正在连接语音…'; break;
@@ -167,20 +182,22 @@ export class VoiceCall extends Store {
         case 'call.closed': this.end(); return;
         case 'playback.clear': this.audio?.clear(); this.status = '我在听'; break;
         case 'conversation.item.input_audio_transcription.started':
-          this.audio?.clear(); this.heard = ''; this.answer = ''; this.response = ''; this.status = '我在听'; break;
+          this.replyComplete = false; this.audio?.clear(); this.heard = ''; this.answer = ''; this.response = ''; this.status = '我在听'; break;
         case 'conversation.item.input_audio_transcription.delta': this.heard = text('delta'); break;
         case 'conversation.item.input_audio_transcription.completed':
+          this.replyComplete = false;
           this.heard = text('text') || this.heard;
           this.remember(`${this.id}:u:${text('item_id') || crypto.randomUUID()}`, 'user', this.heard);
           this.status = '正在回应你'; break;
         case 'response.output_text.delta': {
+          this.replyComplete = false;
           const response = text('response_id') || this.response || crypto.randomUUID();
           if (response !== this.response) this.answer = '';
           this.response = response; this.answer += text('delta');
           this.remember(`${this.id}:a:${response}`, 'assistant', text('delta'), true); break;
         }
         case 'response.output_audio.delta': case 'agent.audio.delta': case 'opening.audio': this.audio?.play(text('delta')); break;
-        case 'task.segment.end': this.audio?.segment(text('token')); break;
+        case 'task.segment.end': this.replyComplete = true; this.audio?.segment(text('token')); break;
         case 'agent.opening': case 'agent.status': this.status = text('text'); break;
         case 'agent.text.delta': {
           const answer = this.remember(`agent:${text('call_id')}`, 'assistant', text('delta'), true,
@@ -188,7 +205,7 @@ export class VoiceCall extends Store {
           if (answer) this.answer = answer; break;
         }
         case 'agent.answer': this.answer = text('text'); this.remember(`${this.id}:agent:${crypto.randomUUID()}`, 'assistant', this.answer); break;
-        case 'response.done': this.status = '我在听，你可以继续说'; break;
+        case 'response.done': this.replyComplete = true; if (!this.audio?.busy) this.status = '我在听，你可以继续说'; break;
         case 'call.ending': this.audio?.clear(); this.muted = true; this.audio?.setEnabled(false); this.answer = text('text'); this.status = '正在告别'; break;
         case 'call.end':
           this.ending = true;
