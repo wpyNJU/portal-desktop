@@ -3,10 +3,10 @@
   "requirements.txt", "serve.py", "package.py", "package-files.json", ".gitignore",
   "agent_bridge.py", "agent_endpoint.py", "agent_stream_voice.py", "background_tasks.py",
   "conversation_memory.py", "doubao_config.py", "doubao_profile.py", "doubao_server.py",
-  "speech_output.py", "task_reports.py", "task_store.py", "task_titles.py", "turn_scheduler.py", "voice_usage.py",
+  "speech_output.py", "task_reports.py", "task_store.py", "task_titles.py", "task_context.py", "turn_scheduler.py", "voice_usage.py",
   "mobile/index.html", "mobile/call.js", "mobile/voice-ui.woff2", "mobile/voice-sans.woff2",
   "licenses/NotoSansSC-OFL.txt", "deploy/Caddyfile.example", "deploy/being-voice-web.service",
-  "run_tests.py", "test_web_bundle.py", "test_barge_in.py", "test_report_priority.py",
+  "run_tests.py", "test_web_bundle.py", "test_connection_startup.py", "test_task_context.py", "test_barge_in.py", "test_report_priority.py",
   "test_agent_handoff.py", "test_speech_output.py", "test_task_titles.py", "test_task_reports.py",
   "test_task_resilience.py", "test_background_streaming.py", "test_query_reuse.py",
   "test_report_prefetch.py", "test_report_edges.py", "test_agent_endpoint.py", "test_turn_scheduler.py"

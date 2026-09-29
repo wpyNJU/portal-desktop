@@ -81,9 +81,10 @@ py -3 -m venv .venv
 ```sh
 python run_tests.py
 python test_web_bundle.py
+python test_connection_startup.py
 ```
 
-前一项是只使用标准库的网关回归；后一项需要先安装运行依赖，验证独立页面、路由、隔离数据目录、WebSocket 控制流程和打包清单，不请求真实豆包或 Agent。
+第一项是只使用标准库的网关回归；后两项需要先安装运行依赖，验证独立页面、路由、隔离数据目录、WebSocket 控制流程、打包清单及大量旧任务恢复时的首句连接，不请求真实豆包或 Agent。
 
 完整桌面/手机音频模拟测试在仓库根目录运行：
 

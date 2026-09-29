@@ -46,6 +46,8 @@ flowchart TD
 
 每个控制连接均验证用户链接。普通重连只读取已保存资料，不自动向 Being 发出新的资料查询；“更新助手信息”才请求更新。用户首次主动对齐也属于显式更新。资料保存在服务端、按 scope 隔离；完整文字历史保存在浏览器。
 
+任务索引与当前续播对象随 `session.create` 一次载入。观察器首轮恢复所有历史任务的状态基线，只向网页恢复数据，不逐条对豆包执行 `session.update`。通话中的报告控制变化经过去重、合并，等待首轮交流结束及输入/生成/播放空闲后再同步；“正在询问续播”到“等待选择”不重复刷新提示词。正文和游标仍持续保存，不依赖提示词是否更新。
+
 ## 每轮问题与后台任务
 
 ```mermaid
@@ -161,5 +163,6 @@ sequenceDiagram
 | 链接验证与 SSE 适配 | `agent_endpoint.py`、`agent_bridge.py` |
 | 请求生命周期与持久化 | `background_tasks.py`、`task_store.py` |
 | 报告续播与优先级 | `task_reports.py`、`turn_scheduler.py` |
+| 初始任务上下文与后续状态合并 | `task_context.py` |
 | 音频来源互斥与旧事件过滤 | `speech_output.py` |
 | 助手身份 / 历史窗口 / 数值用量 | `doubao_profile.py`、`conversation_memory.py`、`voice_usage.py` |
