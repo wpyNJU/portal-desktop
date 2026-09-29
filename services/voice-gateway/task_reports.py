@@ -11,8 +11,11 @@ class TaskReports:
     async def event(self,key):
         row=self.store.get(self.scope,key);row.pop('scope');row.pop('request',None);row['length']=len(row.pop('text'))
         await self.client({'type':'task.updated','task':row})
-    def start(self,key,restart=False,notice=False):
+    def priority(self,key,phase=1):return (self.store.get(self.scope,key)['requested_at'],phase)
+    def start(self,key,restart=False,notice=False,requested=True):
         row=self.store.get(self.scope,key)
+        if requested:
+            self.store.touch(self.scope,key);self.focus=key
         if key in self.jobs and not self.jobs[key].done():
             if row['delivery'] in ('asking','awaiting_choice'):self.jobs[key].cancel()
             else:return '报告已经在进行或排队'
@@ -20,7 +23,6 @@ class TaskReports:
         if not notice and not restart and row['state']!='running' and row['cursor']>=len(row['text']):return '这份报告已经读完，如需再次收听请选择从头报告'
         if restart:self.store.update(self.scope,key,cursor=0)
         announce=row['delivery']!='waiting' or row['cursor']==0 or restart or row['state'] not in ('completed','running')
-        self.focus=key
         self.store.update(self.scope,key,delivery='pending')
         task=asyncio.create_task(self.report(key,announce=announce));self.jobs[key]=task
         return '已安排完整报告，将在空闲时从保存的位置继续'
@@ -54,7 +56,7 @@ class TaskReports:
         if future is not None and not future.done():future.set_result(True)
     async def report(self,key,announce=True):
         await self.event(key)
-        stream_gap=False
+        stream_gap=False;yielded=False
         async def prepare(cursor,stop):
             waiting_since=time.monotonic()
             # Only complete clauses are announced while the stream is still running.
@@ -82,10 +84,11 @@ class TaskReports:
                 return end,frames
             return None
         async def read(stop):
-            nonlocal stream_gap
+            nonlocal stream_gap,yielded
             self.active_key=key
             self.active_stop=stop
             if self.output and not await self.output.begin_scheduled(stop):return
+            switched=self.focus!=key;self.focus=key
             self.store.update(self.scope,key,delivery='reporting');await self.event(key)
             row=self.store.get(self.scope,key)
             title=row['title']
@@ -97,8 +100,12 @@ class TaskReports:
             prepared=None
             try:
                 prepared=asyncio.create_task(prepare(row['cursor'],stop))
-                if announce and not await self.say(key,intro,stop):raise RuntimeError('audio unavailable')
+                if (announce or switched) and not await self.say(key,intro,stop):raise RuntimeError('audio unavailable')
                 while not stop.is_set() and not self.closed:
+                    # Yield only at an acknowledged sentence boundary. Prefetched
+                    # audio is discarded; its unread cursor remains unchanged.
+                    if self.scheduler.has_newer(lambda:self.priority(key)):
+                        yielded=True;return
                     result=await prepared
                     if result is STREAM_PENDING:
                         stream_gap=True;return
@@ -117,13 +124,15 @@ class TaskReports:
                     if not prepared.done():prepared.cancel()
                     await asyncio.gather(prepared,return_exceptions=True)
         try:
-            delivered=await self.scheduler.deliver(read)
+            delivered=await self.scheduler.deliver(read,priority=lambda:self.priority(key))
             if self.active_key==key:self.active_key=None
             row=self.store.get(self.scope,key)
             if row['delivery']=='deferred':return
-            if stream_gap and delivered:
+            if (stream_gap or yielded) and delivered:
                 self.store.update(self.scope,key,delivery='waiting');await self.event(key);return
-            complete=delivered and row['state']!='running' and row['cursor']>=len(row['text'])
+            # A new question during the final quiet interval must not turn an
+            # already acknowledged full report back into an unfinished one.
+            complete=(delivered or bool(row['text'])) and row['state']!='running' and row['cursor']>=len(row['text'])
             self.store.update(self.scope,key,delivery='reported' if complete else 'paused');await self.event(key)
             if not complete and not self.closed:
                 async def ask(stop):
@@ -134,7 +143,7 @@ class TaskReports:
                     self.store.update(self.scope,key,delivery='asking');await self.event(key)
                     title=self.store.get(self.scope,key)['title']
                     await self.say(key,f'关于{title}，刚才还没讲完，你还要继续听吗？',stop)
-                await self.scheduler.deliver(ask)
+                await self.scheduler.deliver(ask,priority=lambda:self.priority(key,0))
                 if self.active_key==key:self.active_key=None
                 if not self.closed:self.store.update(self.scope,key,delivery='awaiting_choice');await self.event(key)
         except asyncio.CancelledError:

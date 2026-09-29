@@ -26,6 +26,7 @@ class BackgroundTasks:
         previous = self.entries.get(key) if identity else None
         if previous and (not previous['job'].done() or
                          (cacheable and self.store.get(scope, previous['id'])['state'] == 'completed')):
+            self.store.touch(scope,previous['id'])
             return previous['id'], True
         task_id = self.store.create(scope, message, title)
         job = asyncio.create_task(self.run(task_id, scope, message, bridge, copy.deepcopy(context)))

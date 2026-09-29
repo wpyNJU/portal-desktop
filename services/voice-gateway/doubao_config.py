@@ -19,6 +19,7 @@ INSTRUCTIONS+='\n调用ask_agent时同时提供简短title，作为这次查询�
 
 SAVED_TASK={'type':'function','name':'saved_task','description':'查询本次或历史后台任务的状态和完整结果，或继续、重播、暂不报告；不重新请求后台Agent。用户说继续报告、从头念、刚才任务结果、不要继续时优先使用。未给task_id默认最近一项；多个任务不明确时先list。','parameters':{'type':'object','properties':{'action':{'type':'string','enum':['list','get','continue','replay','defer']},'task_id':{'type':'string'},'offset':{'type':'integer','description':'list为记录偏移，get为正文字符偏移；按next_offset继续获取可读完整结果。'}},'required':['action']}}
 INSTRUCTIONS+='\n每次后台查询都有持久化任务记录。查询之前任务的状态、内容或要求继续报告时调用saved_task，不重新调用ask_agent。用户打断报告后，系统会在空闲时问是否继续；用户同意则continue，拒绝则defer，要求从头则replay。系统会完整逐段播报，不替系统缩写报告。查询返回不代表外部实际任务已经完成。'
+INSTRUCTIONS+='\n始终先回应用户最新一轮问题。旧查询的结果和未讲完的报告由语音端在当前交流结束后安排，按用户最近一次提出或追问该事项的时间从近到远播报；旧查询刚返回不代表用户刚提出。不要在新问题的回答中突然插入旧报告，也不要自行逐项催问旧任务。用户明确重新提起某个已保存任务时用saved_task查看或续播，复用已有任务，不重新提交查询。'
 
 VOICES={'zh_female_vv_jupiter_bigtts','zh_female_xiaohe_jupiter_bigtts','zh_male_yunzhou_jupiter_bigtts','zh_male_xiaotian_jupiter_bigtts'}
 DEFAULT_VOICE='zh_female_vv_jupiter_bigtts'

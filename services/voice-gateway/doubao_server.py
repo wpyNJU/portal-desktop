@@ -102,7 +102,7 @@ class ToolCalls:
         labels={'queued':'Agent 已接收，仍在等待回复','accepted':'Agent 已接收请求','thinking':'正在分析你的问题','tool':'正在调用工具获取信息','text':'正在生成回答'}
         while not self.closed:
             tracked={r['id'] for r in task_store.watchable(self.scope)}|set(offsets)
-            for key in sorted(tracked,key=lambda k:task_store.get(self.scope,k)['created']):
+            for key in sorted(tracked,key=lambda k:task_store.get(self.scope,k)['requested_at'],reverse=True):
                 brief={'id':key}
                 key=brief['id'];row=task_store.get(self.scope,key)
                 if versions.get(key)!=row['updated']:
@@ -124,13 +124,13 @@ class ToolCalls:
                     if row['state']!='running' or re.search(r'[。！？!?；;\n]',unread) or len(unread)>=160:
                         if row['state']=='completed' and not unread:
                             task_store.update(self.scope,key,delivery='reported');await self.reports.event(key)
-                        else:self.reports.start(key,notice=row['state']!='running' and not unread)
+                        else:self.reports.start(key,notice=row['state']!='running' and not unread,requested=False)
                 if row['state']!='running' and key not in finished:
                     finished.add(key)
                     if attached:
                         await self.client({'type':'agent.text.done' if row['state']=='completed' else 'agent.text.error','call_id':key,'message':'查询未完整结束，已保留收到的内容，未自动重试'})
                     if not row['text'] and row['delivery']=='waiting':
-                        self.reports.start(key,notice=True)
+                        self.reports.start(key,notice=True,requested=False)
             await asyncio.sleep(.25)
 
     async def run(self,items,epoch,stop):
@@ -142,6 +142,7 @@ class ToolCalls:
                 if item.get('name')!='ask_agent' or not isinstance(message,str) or not 1<=len(message)<=12000:raise ValueError()
                 identity,cacheable=query_identity(item)
                 key,reused=self.manager.submit(self.scope,identity,cacheable,message,self.bridge,self.context,title=args.get('title'))
+                request_turn=self.audio.turn
                 self.task_ids[item['call_id']]=key
                 await self.reports.event(key)
                 if reused:
@@ -156,7 +157,8 @@ class ToolCalls:
                             if audio_stop.is_set():return
                             await self.audio.scheduled(d,audio_stop)
                         await speak_opening(acknowledgement,output,audio_stop,lambda:not self.closed,voice=self.voice)
-                    await self.scheduler.deliver(opening)
+                    await self.scheduler.deliver(opening,priority=lambda:self.reports.priority(key,2),
+                        valid=lambda:not self.closed and self.audio.turn==request_turn and task_store.get(self.scope,key)['state']=='running' and not task_store.get(self.scope,key)['text'])
                 while task_store.get(self.scope,key)['state']=='running':
                     if stop.is_set() or self.closed:return
                     await asyncio.sleep(.25)
@@ -172,6 +174,9 @@ class ToolCalls:
             await self.up({'type':'conversation.item.create','items':results})
         return results
     async def reuse(self,entry,item,epoch):
+        key=self.task_ids.get(entry.get('call_id'))
+        if key:
+            task_store.touch(self.scope,key);self.task_ids[item['call_id']]=key
         logger.info('agent_reused scene=%s',self.context['scene'])
         await self.client({'type':'agent.status','text':'正在使用同一次查询，无需重复提交'})
         results=await asyncio.shield(entry['task'])
@@ -186,7 +191,8 @@ class ToolCalls:
             if action=='list':answer={'tasks':task_store.list(self.scope,args.get('offset',0))}
             else:
                 row=task_store.get(self.scope,key);key=row['id']
-                if action=='get':answer=task_store.page(self.scope,key,args.get('offset',0))
+                if action=='get':
+                    task_store.touch(self.scope,key);answer=task_store.page(self.scope,key,args.get('offset',0))
                 elif action in ('continue','replay'):answer={'message':self.reports.start(key,restart=action=='replay'),'task_id':key,'title':row['title']}
                 elif action=='defer':answer={'message':await self.reports.defer(key),'task_id':key,'title':row['title']}
                 else:raise ValueError('不支持的任务操作')
@@ -213,7 +219,7 @@ class ToolCalls:
             stop=threading.Event();task=asyncio.create_task(self.run([item],self.epoch,stop))
             self.pending.append((task,stop))
             if key:
-                entry={'task':task,'stop':stop,'finished':float('inf'),'ok':False}
+                entry={'task':task,'stop':stop,'finished':float('inf'),'ok':False,'call_id':call_id}
                 self.queries[key]=entry
                 def done(t,record=entry):
                     record['finished']=time.monotonic()
