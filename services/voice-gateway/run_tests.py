@@ -5,6 +5,7 @@ import sys
 
 root=Path(__file__).resolve().parent
 tests=(
+    'test_agent_handoff.py',
     'test_speech_output.py',
     'test_task_titles.py',
     'test_task_reports.py',

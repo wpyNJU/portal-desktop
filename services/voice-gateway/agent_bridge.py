@@ -3,7 +3,6 @@ import asyncio,json,time,uuid
 from pathlib import Path
 from urllib.parse import urlsplit,urlunsplit
 import httpx
-from conversation_memory import history_instructions
 
 async def sse_events(response):
     event='message';data=[]
@@ -55,7 +54,8 @@ class AgentBridge:
                     if r.status_code==200:cursor=max([int(m.get('seq',0)) for m in r.json().get('messages',[])]+[0])
                 except (httpx.HTTPError,ValueError,TimeoutError):pass
                 report('request_start')
-                body={'message':(history_instructions(context.get('history',[]))+'\n本次用户请求：\n'+text) if context.get('history') else text,'scene_id':scene,'session_id':context.get('session_id'),
+                # Doubao resolves references in the tool message; saved call history stays in its session.
+                body={'message':text,'scene_id':scene,'session_id':context.get('session_id'),
                       'scene_meta':{'client':'voice-call/1.0','scene_label':'语音通话'}}
                 async with client.stream('POST',self.url,json=body) as response:
                     if response.status_code==202:
