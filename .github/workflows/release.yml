@@ -42,7 +42,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-14, macos-15-intel, windows-latest]
+        os: [windows-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     env:
@@ -140,9 +140,9 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
-      - name: Validate all three platform packages and stage checksums
-        run: node scripts/stage-release.mjs artifacts release "$(node -p 'require("./package.json").version')"
-      - name: Publish the complete paired release
+      - name: Validate the Windows package and stage checksums
+        run: node scripts/stage-release.mjs artifacts release "$(node -p 'require("./package.json").version')" windows-x64
+      - name: Create the draft release with Windows assets
         if: startsWith(github.ref, 'refs/tags/')
         env:
           GH_TOKEN: ${{ github.token }}
@@ -150,6 +150,5 @@ jobs:
         run: |
           gh release create "$GITHUB_REF_NAME" --verify-tag --draft --title "Portal Desktop $GITHUB_REF_NAME" --notes-file desktop/RELEASE_NOTES.md
           gh release upload "$GITHUB_REF_NAME" release/*
-          gh release edit "$GITHUB_REF_NAME" --draft=false --latest
-# Only a matching version tag builds and publishes. Publication waits for all three
-# native builds; the release stays a draft if asset upload fails.
+# Only a matching version tag builds. This fork has no Developer ID secrets, so CI
+# builds Windows only and leaves a draft; macOS packages are attached before publishing.

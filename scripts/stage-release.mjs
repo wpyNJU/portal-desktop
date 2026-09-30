@@ -3,7 +3,8 @@ import { copyFile, mkdir, readdir, readFile, writeFile } from 'node:fs/promises'
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 
-const [input, output, version] = process.argv.slice(2);
+const [input, output, version, only] = process.argv.slice(2);
+const targets = only ? new Set(only.split(',')) : null;
 if (!input || !output || !/^\d+\.\d+\.\d+$/.test(version)) throw new Error('Usage: stage-release.mjs artifacts output X.Y.Z');
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
 async function files(root) {
@@ -25,6 +26,7 @@ for (const [artifact, platform, arch, label] of [
   ['portal-desktop-macos-15-intel', 'darwin', 'x64', 'macos-x64'],
   ['portal-desktop-windows-latest', 'win32', 'x64', 'windows-x64'],
 ]) {
+  if (targets && !targets.has(label)) continue;
   const contents = await files(path.join(input, artifact));
   const metadata = exactlyOne(contents.filter(f => path.basename(f) === 'runtime-bundle.json'), 'runtime manifest');
   const bundle = JSON.parse(await readFile(metadata, 'utf8'));
