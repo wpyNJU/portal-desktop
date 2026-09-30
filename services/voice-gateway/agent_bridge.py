@@ -3,6 +3,7 @@ import asyncio,json,time,uuid
 from pathlib import Path
 from urllib.parse import urlsplit,urlunsplit
 import httpx
+from agent_errors import AgentFailure
 
 async def sse_events(response):
     event='message';data=[]
@@ -61,20 +62,25 @@ class AgentBridge:
                     if response.status_code==202:
                         report('queued')
                         await response.aread()
-                        if cursor is None:
-                            raise RuntimeError('Agent 已接收并排队，但暂时无法确认回复位置。请稍后查看任务状态，不要重复提交。')
+                        # A missing optimization cursor must not turn an accepted
+                        # request into a failure. Recover by its unique scene below.
                     elif response.status_code!=200:
-                        raise RuntimeError(f'Agent 接口返回 HTTP {response.status_code}')
+                        report('http_'+str(response.status_code))
+                        raise AgentFailure('upstream_http_error')
                     else:
                         report('connected')
                         if 'text/event-stream' not in response.headers.get('content-type',''):
-                            raise RuntimeError('Agent 未返回预期的 SSE 数据')
+                            raise AgentFailure('upstream_protocol_error')
+                        received_text=False
                         async for event,data in sse_events(response):
                             if event=='meta':
                                 if data.get('scene_id')==scene:
                                     owned_stream=data.get('stream_id');report('accepted')
                                 continue
-                            if event=='error':raise RuntimeError('Agent 返回错误，请稍后重试')
+                            if event=='error':
+                                if data.get('scene_id') and data['scene_id']!=scene:continue
+                                if owned_stream and data.get('stream_id') and data['stream_id']!=owned_stream:continue
+                                raise AgentFailure('upstream_error')
                             if data.get('scene_id')!=scene:continue
                             if owned_stream and data.get('stream_id') and data['stream_id']!=owned_stream:continue
                             event_id=data.get('event_id')
@@ -91,26 +97,36 @@ class AgentBridge:
                             if event=='content_block_delta' and delta.get('type')=='input_json_delta':report('tool')
                             if event=='content_block_delta':
                                 piece=data.get('delta',{}).get('text','')
-                                if isinstance(piece,str) and piece:report('text');emit(piece)
+                                if isinstance(piece,str) and piece:received_text=True;report('text');emit(piece)
                             elif event=='message_stop':
                                 if data.get('session_id'):context['session_id']=data['session_id']
-                                finished=True;return
-                        raise RuntimeError('Agent 连接提前结束，请重试')
+                                # Heart may stop an empty/thinking reply then continue.
+                                # Do not close the stream before the actual text arrives.
+                                if received_text:finished=True;return
+                                report('awaiting_reply')
+                        if received_text:raise AgentFailure('upstream_connection_error')
+                        report('awaiting_reply')
                 # A 202 is an accepted, queued message: never resubmit it (could duplicate actions).
                 deadline=time.monotonic()+540
                 while time.monotonic()<deadline:
                     await asyncio.sleep(1.5)
-                    r=await client.get(self.endpoint(f'/api/history?limit=100&after={cursor}'))
+                    path='/api/history?limit=100'+(f'&after={cursor}' if cursor is not None else '')
+                    try:r=await client.get(self.endpoint(path),timeout=15)
+                    except httpx.HTTPError:continue
                     if r.status_code!=200:continue
+                    yielded=False
                     for m in sorted(r.json().get('messages',[]),key=lambda m:int(m.get('seq',0))):
                         seq=int(m.get('seq',0))
-                        if seq<=cursor:continue
-                        cursor=max(cursor,seq)
+                        if cursor is not None and seq<=cursor:continue
+                        cursor=max(cursor or 0,seq)
+                        if m.get('scene_id')==scene and m.get('from')=='system' and m.get('content')=='[breath yielded to human]':
+                            yielded=True
                         if m.get('scene_id')==scene and m.get('role') in ('being','assistant'):
                             content=m.get('content','')
                             if isinstance(content,str) and content and not content.startswith('[breath '):
                                 report('text');emit(content);finished=True;return
-                raise RuntimeError('Agent 回复等待超时，消息已送达，请稍后查看')
+                    if yielded:raise AgentFailure('upstream_interrupted')
+                raise AgentFailure('reply_timeout')
             task=asyncio.create_task(consume())
             try:
                 while not task.done():
@@ -126,7 +142,7 @@ class AgentBridge:
                 await task
             except httpx.HTTPError:
                 # Exception strings contain the credential-bearing request URL. Never forward them.
-                raise RuntimeError('Agent 网络连接异常，请稍后重试') from None
+                raise AgentFailure('upstream_connection_error') from None
             finally:
                 if not task.done():task.cancel()
                 await asyncio.gather(task,return_exceptions=True)

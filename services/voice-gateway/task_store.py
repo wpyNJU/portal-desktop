@@ -11,6 +11,9 @@ class TaskStore:
         if 'requested_at' not in {r['name'] for r in self.db.execute('PRAGMA table_info(tasks)')}:
             self.db.execute("ALTER TABLE tasks ADD COLUMN requested_at REAL NOT NULL DEFAULT 0")
             self.db.execute("UPDATE tasks SET requested_at=COALESCE(created,0)")
+        columns={r['name'] for r in self.db.execute('PRAGMA table_info(tasks)')}
+        for column in ('error_code','error_message'):
+            if column not in columns:self.db.execute(f"ALTER TABLE tasks ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")
         self.db.commit()
     def create(self,scope,message,title=None):
         key=uuid.uuid4().hex;now=time.time()
@@ -25,7 +28,7 @@ class TaskStore:
         if not row:raise ValueError('没有找到这条任务记录')
         value=self.record(row);value['request']=row['request'];return value
     def update(self,scope,key,**values):
-        assert set(values)<= {'state','text','cursor','delivery'}
+        assert set(values)<= {'state','text','cursor','delivery','error_code','error_message'}
         values['updated']=time.time()
         self.db.execute('UPDATE tasks SET '+','.join(k+'=?' for k in values)+' WHERE scope=? AND id=?',(*values.values(),scope,key));self.db.commit()
     def touch(self,scope,key):
@@ -33,7 +36,7 @@ class TaskStore:
         self.get(scope,key);now=time.time()
         self.db.execute('UPDATE tasks SET requested_at=MAX(requested_at,?),updated=? WHERE scope=? AND id=?',(now,now,scope,key));self.db.commit()
     def list(self,scope,offset=0):
-        return [self.record(r) for r in self.db.execute('SELECT id,title,request,state,cursor,delivery,created,updated,requested_at,length(text) AS length FROM tasks WHERE scope=? ORDER BY requested_at DESC,created DESC,rowid DESC LIMIT 20 OFFSET ?',(scope,max(0,int(offset))))]
+        return [self.record(r) for r in self.db.execute('SELECT id,title,request,state,cursor,delivery,created,updated,requested_at,error_code,error_message,length(text) AS length FROM tasks WHERE scope=? ORDER BY requested_at DESC,created DESC,rowid DESC LIMIT 20 OFFSET ?',(scope,max(0,int(offset))))]
     def watchable(self,scope):
         # Keep every live/unreported task, even when newer history exceeds one UI page.
         return [dict(r) for r in self.db.execute("SELECT id FROM tasks WHERE scope=? AND (state='running' OR delivery!='reported') ORDER BY requested_at DESC,created DESC,rowid DESC",(scope,))]

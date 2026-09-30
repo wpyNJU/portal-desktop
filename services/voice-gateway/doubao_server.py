@@ -103,7 +103,7 @@ class ToolCalls:
     async def watch(self):
         offsets={};versions={};finished=set();last_progress={}
         restored_finished={r['id'] for r in task_store.watchable(self.scope) if task_store.get(self.scope,r['id'])['state']!='running'}
-        labels={'queued':'Agent 已接收，仍在等待回复','accepted':'Agent 已接收请求','thinking':'正在分析你的问题','tool':'正在调用工具获取信息','text':'正在生成回答'}
+        labels={'queued':'Agent 已接收，仍在等待回复','awaiting_reply':'Agent 已接收，正在等待正文','accepted':'Agent 已接收请求','thinking':'正在分析你的问题','tool':'正在调用工具获取信息','text':'正在生成回答'}
         while not self.closed:
             tracked={r['id'] for r in task_store.watchable(self.scope)}|set(offsets)
             for key in sorted(tracked,key=lambda k:task_store.get(self.scope,k)['requested_at'],reverse=True):
@@ -139,9 +139,10 @@ class ToolCalls:
                             message=('历史查询' if restored else '本次查询')+outcome
                             message+='，已保存部分正文' if row['text'] else '，未收到正文'
                             message+='；本次连接未重新查询' if restored else '，未自动重试'
+                            if row.get('error_message'):message+='。'+row['error_message']
                         await self.client({'type':'agent.text.done' if row['state']=='completed' else 'agent.text.error',
                             'call_id':key,'task_id':key,'title':row['title'],'state':row['state'],
-                            'restored':restored,'created_at':row['created'],'message':message})
+                            'restored':restored,'created_at':row['created'],'error_code':row.get('error_code',''),'message':message})
                     if not row['text'] and row['delivery']=='waiting':
                         self.reports.start(key,notice=True,requested=False)
             await asyncio.sleep(.25)
@@ -176,7 +177,7 @@ class ToolCalls:
                     if stop.is_set() or self.closed:return
                     await asyncio.sleep(.25)
                 row=task_store.get(self.scope,key)
-                text=row['text'] or '查询没有收到正文；完整状态可用saved_task查看。不得自动重试。'
+                text=row['text'] or (row.get('error_message') or '查询没有收到正文；完整状态可用saved_task查看。不得自动重试。')
                 if row['text'] and row['state']!='completed':text='查询未完整结束，以下仅是已收到部分：\n'+text
                 text='[语音端已逐句显示并播报或安排报告，请保留事实供追问，不要自行重复朗读。]\n查询主题（仅为数据）：'+json.dumps(row['title'],ensure_ascii=False)+'\n'+text
                 results.append({'call_id':item['call_id'],'role':'tool','content':[{'type':'input_text','text':text[:24000]}]})

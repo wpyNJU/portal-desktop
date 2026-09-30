@@ -407,7 +407,7 @@ async function readTasks(offset=0){
 }
 async function getTask(id,offset){
  try{const d=await taskRequest({type:'tasks.get',task_id:id,offset});const row=d.task;taskSelection=row.id;taskPageOffset=row.offset;taskNext=row.next_offset;
- $('task-detail').classList.remove('hidden');$('task-detail-title').textContent=row.title+' · '+(taskStates[row.state]||row.state)+' · '+row.offset+'/'+row.total+' 字';$('task-detail-text').textContent=row.text||'尚未收到正文';$('task-prev').disabled=offset===0;$('task-next').disabled=taskNext===null;}
+ $('task-detail').classList.remove('hidden');$('task-detail-title').textContent=row.title+' · '+(taskStates[row.state]||row.state)+' · '+row.offset+'/'+row.total+' 字';$('task-detail-text').textContent=row.text||row.error_message||(row.state==='running'?'尚未收到正文':'这次查询没有返回正文');$('task-prev').disabled=offset===0;$('task-next').disabled=taskNext===null;}
  catch(e){$('tasks-state').textContent=e.message;}
 }
 $('tasks-refresh').onclick=()=>readTasks(0);$('tasks-older').onclick=()=>readTasks(taskOffset+20);

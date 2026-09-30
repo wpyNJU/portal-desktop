@@ -4,6 +4,7 @@ import copy
 import logging
 import threading
 import time
+from agent_errors import AgentFailure
 
 logger = logging.getLogger('voice.connection')
 
@@ -59,6 +60,7 @@ class BackgroundTasks:
             self.store.update(scope, task_id, text=''.join(parts))
         request = asyncio.create_task(bridge.stream(message, context, stop, emit, stage=stage))
         state = 'error'
+        failure = None
         try:
             async with asyncio.timeout(self.timeout):
                 while not request.done():
@@ -66,17 +68,22 @@ class BackgroundTasks:
                     if time.monotonic()-last > self.idle_timeout:
                         raise TimeoutError()
                 await request
-            state = 'completed' if parts else 'error'
+            if not parts:raise AgentFailure('empty_reply')
+            state = 'completed'
         except asyncio.CancelledError:
             state = 'interrupted'
+            failure = AgentFailure('gateway_interrupted')
             raise
         except Exception as exc:
-            logger.warning('background_task_failed id=%s kind=%s', task_id, type(exc).__name__)
+            failure=exc if isinstance(exc,AgentFailure) else AgentFailure('reply_timeout' if isinstance(exc,TimeoutError) else 'unexpected_error')
+            if failure.code=='upstream_interrupted':state='interrupted'
+            logger.warning('background_task_failed id=%s kind=%s code=%s', task_id, type(exc).__name__,failure.code)
         finally:
             if not request.done():request.cancel()
             await asyncio.gather(request, return_exceptions=True)
             # A disconnected listener may have paused/deferred delivery. Preserve that choice.
-            self.store.update(scope, task_id, state=state, text=''.join(parts))
+            self.store.update(scope, task_id, state=state, text=''.join(parts),
+                              error_code=failure.code if failure else '',error_message=failure.public_message if failure else '')
             logger.info('background_task_done id=%s state=%s elapsed=%.3f', task_id, state, time.monotonic()-started)
 
     def busy(self, scope):
