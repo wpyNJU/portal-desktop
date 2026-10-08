@@ -19,7 +19,7 @@ def build(output):
         relative=PurePosixPath(name)
         if relative.is_absolute() or '..' in relative.parts or '\\' in name:raise ValueError('Invalid package path')
         if any(part in {'data','logs','backups','__pycache__','.venv'} for part in relative.parts):raise ValueError('Runtime directory cannot be packaged')
-        if any(fnmatch(relative.name,pattern) for pattern in ('doubao-api-key.txt','agent-url.txt','.env*','*.env','*.sqlite3*','*.db*','*.jsonl','assistant-profile*.json','self-test.wav')):
+        if any(fnmatch(relative.name,pattern) for pattern in ('*-api-key.txt','openai-proxy-url.txt','agent-url.txt','.env*','*.env','*.sqlite3*','*.db*','*.jsonl','assistant-profile*.json','self-test.wav')):
             raise ValueError('Private runtime file cannot be packaged')
         path=source.joinpath(*relative.parts)
         if path.is_symlink() or not path.resolve().is_relative_to(source):raise ValueError('Package path escapes source')

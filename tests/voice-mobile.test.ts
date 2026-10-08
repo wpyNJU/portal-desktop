@@ -20,7 +20,10 @@ test.each([16000, 44100, 48000])('mobile %i Hz capture preserves real-time 16 kH
 function setup() {
   const sent: any[] = [], nodes: any[] = [];
   const context = { currentTime: 0, destination: {},
-    createBuffer: (_channels: number, length: number, rate: number) => ({ duration: length / rate, getChannelData: () => new Float32Array(length) }),
+    createBuffer: (_channels: number, length: number, rate: number) => {
+      const samples = new Float32Array(length);
+      return { duration: length / rate, sampleRate: rate, getChannelData: () => samples };
+    },
     createBufferSource: () => {
       const node = { buffer: null, onended: null, connect: vi.fn(), disconnect: vi.fn(), start: vi.fn(), stop: vi.fn() };
       nodes.push(node); return node;
@@ -65,4 +68,15 @@ test('mobile old onended callback cannot drain a newer short reply', () => {
   context.currentTime = .08; event({ type: 'playback.clear', generation: 2 });
   event({ type: 'response.output_audio.delta', generation: 2, delta: pcm });
   sent.length = 0; late(); expect(sent).toEqual([]);
+});
+
+test('GPT-Live PCM16 uses the negotiated rate and shares interruption fencing', () => {
+  const { event, nodes } = setup();
+  const delta = Buffer.from(new Int16Array([-32768, 0, 16384, 32767]).buffer).toString('base64');
+  event({ type: 'live.audio.delta', generation: 1, format: 'pcm16', sample_rate: 16000, delta });
+  expect(nodes[0].buffer.sampleRate).toBe(16000);
+  expect([...nodes[0].buffer.getChannelData(0)]).toEqual([-1, 0, .5, 32767 / 32768]);
+  event({ type: 'playback.clear', generation: 2 });
+  event({ type: 'live.audio.delta', generation: 1, format: 'pcm16', sample_rate: 16000, delta });
+  expect(nodes).toHaveLength(1); expect(nodes[0].stop).toHaveBeenCalledOnce();
 });

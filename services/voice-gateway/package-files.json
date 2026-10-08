@@ -3,6 +3,8 @@
   "requirements.txt", "serve.py", "package.py", "package-files.json", ".gitignore",
   "agent_bridge.py", "agent_errors.py", "agent_endpoint.py", "agent_stream_voice.py", "background_tasks.py",
   "conversation_memory.py", "doubao_config.py", "doubao_profile.py", "doubao_server.py",
+  "live_config.py", "live_session.py", "test_live_session.py",
+  "openai_local_relay.py", "test_openai_local_relay.py",
   "speech_output.py", "task_reports.py", "task_store.py", "task_titles.py", "task_context.py", "turn_scheduler.py", "voice_usage.py",
   "mobile/index.html", "mobile/call.js", "mobile/voice-ui.woff2", "mobile/voice-sans.woff2",
   "licenses/NotoSansSC-OFL.txt", "deploy/Caddyfile.example", "deploy/being-voice-web.service",

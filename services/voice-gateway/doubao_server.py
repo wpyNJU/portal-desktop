@@ -13,6 +13,8 @@ from speech_output import SpeechOutput
 from conversation_memory import normalize_history,history_instructions
 from doubao_config import ROOT,URL,headers,create_session,VOICES,DEFAULT_VOICE
 from voice_usage import UsageCapture,call_id as usage_call_id,write as write_usage
+from live_config import capabilities
+from live_session import LiveSession
 from doubao_profile import fetch_profile,session_instructions,load_profile,save_profile,profile_updated_at
 
 profile_update_lock=asyncio.Lock()
@@ -63,7 +65,9 @@ async def speak_opening(text,client,stop,valid,voice=DEFAULT_VOICE):
         logging.warning('optional_opening_unavailable')
 
 @app.get('/health')
-def health():return {'ready':(ROOT/'doubao-api-key.txt').is_file(),'voice':'Doubao Seeduplex 3.0','agent':'Loom SSE','mode':'duplex'}
+def health():
+    providers=capabilities(ROOT)
+    return {'ready':any(value['configured'] for value in providers.values()),'voice':'Doubao Seeduplex 3.0','agent':'Loom SSE','mode':'duplex','providers':providers}
 
 AGENT_TIMEOUT=300
 AGENT_MAX_WAIT=600
@@ -312,6 +316,15 @@ async def connection(ws:WebSocket):
                     await send_client({'type':'error','message':'更新未完成，已保留原有资料'})
             return
         if initial_request.get('type')=='session.close':return
+        provider=initial_request.get('provider','doubao')
+        if provider not in ('doubao','gptlive'):
+            await send_client({'type':'error','message':'不支持的语音模式'});return
+        if provider=='gptlive':
+            context['history']=normalize_history(initial_request.get('history',[]))
+            session=LiveSession(ws,send_client,task_store,background_tasks,selected_bridge,context,
+                                load_profile(profile_path),initial_request,query_identity)
+            await session.run(ROOT)
+            return
         voice=initial_request.get('voice',DEFAULT_VOICE)
         if not isinstance(voice,str) or voice not in VOICES:voice=DEFAULT_VOICE
         context['history']=normalize_history(initial_request.get('history',[]))

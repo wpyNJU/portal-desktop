@@ -1,6 +1,6 @@
 # Being 语音网页版：打包与部署
 
-本目录是当前手机语音网页与豆包网关的独立交付单元；不需要 Electron、本地大模型或 GPU。豆包和 Being Agent 仍通过网络调用。手机界面、字体、网关、完整流程、测试及部署示例一同交付。
+本目录是当前手机语音网页与豆包 / GPT-Live 网关的独立交付单元；不需要 Electron、本地大模型或 GPU。语音模型和 Being Agent 仍通过网络调用。手机界面、字体、网关、完整流程、测试及部署示例一同交付。
 
 ## 生成部署包
 
@@ -31,11 +31,27 @@ py -3 -m venv .venv
 .\.venv\Scripts\python.exe serve.py --data-dir ./data
 ```
 
-访问 `http://localhost:22601/mobile/`。缺少 API Key 时仍可以打开网页和验证启动，但不能建立豆包通话；`/pipeline/health` 的 `ready` 为 false。
+访问 `http://localhost:22601/mobile/`。缺少 API Key 时仍可以打开网页和验证启动；两个模式均未配置时 `/pipeline/health` 的 `ready` 为 false，`providers` 分别给出配置状态。
 
 在**服务端**的数据目录中创建 `doubao-api-key.txt`，内容仅为你自己的豆包端到端实时语音 API Key。不要写入 HTML/JS、提交到仓库或放进 ZIP。当前配置使用模型 `1.2.6.1`，需要账户具备相应接口权限；普通文本模型 Key 不保证可用于此语音接口。
 
+使用 GPT-Live 时，在同一服务端数据目录创建 `openai-api-key.txt`，内容仅为可调用 `gpt-live-1` 的 OpenAI 项目 Key；也可通过进程环境变量 `OPENAI_API_KEY` 提供。文件应仅服务用户可读，例如 Linux `chmod 600 openai-api-key.txt`。现网数据目录为 `/data/private/wpy/minicpm-voice`。文件每次连接时读取，不需要重启；网页刷新后在设置中选择 GPT-Live。服务器需能连接 `wss://api.openai.com/v1/live/sessions`。配置存在不等于账户权限已通过验证；默认仍使用豆包。OpenRouter Key 不能替代此官方接口的 Key。
+
 用户首次打开页面，在设置里输入自己的 Being 链接，例如 `https://echo.beings.town/用户名/?token=你的token`。后端验证链接并派生 streaming 地址。当前只允许 `echo.beings.town`，没有泛化为任意 HTTP Agent。
+
+### 仅通过本地电脑转接 OpenAI
+
+云端无法连接 OpenAI、本地电脑可以连接时，在本地运行：
+
+```sh
+python openai_local_relay.py --ssh-target 用户名@服务器地址 --ssh-port SSH端口
+```
+
+需要事先配置 SSH 密钥登录及可信 `known_hosts`；程序不接收或保存 SSH 密码。默认本地监听 `127.0.0.1:22618`，用 SSH 反向转发到服务器 `127.0.0.1:22619`。SSH 连接断开后每 5 秒重试，远端端口被占用时不会抢占。仅支持 `CONNECT api.openai.com:443`，不开放其他目标；TLS 不在电脑上解密，OpenAI Key 仍在服务器。
+
+在服务器数据目录创建 `openai-proxy-url.txt`，内容为 `http://127.0.0.1:22619`；也可使用 `OPENAI_LIVE_PROXY` 环境变量（支持 HTTP/HTTPS CONNECT 代理）。仅 Live 连接读取该配置，不改变 Being、豆包或系统全局代理。普通环境变量代理在未指定专用代理时继续适用。代理私有文件不得打包或提交。
+
+电脑需保持开机、不休眠、运行转接进程并能访问 OpenAI；此脚本不会自动安装开机启动。结束本地程序会断开 Live 通话，用户可以切换豆包。生产环境需保持 SSH `GatewayPorts no`，并核实远端转发只监听回环地址；不要将转接端口暴露公网。
 
 新部署**不需要**公共默认 `agent-url.txt`；每个用户自行配置链接。旧环境的该文件仍可选，用于识别和复用旧助手资料，不会绕过新连接的 token 验证。
 
@@ -69,7 +85,7 @@ py -3 -m venv .venv
 | 位置 | 内容 |
 | --- | --- |
 | 浏览器 localStorage | 用户 Being 链接及偏好，含该用户 token |
-| 浏览器 IndexedDB | 本机完整文字记录；给豆包的近期窗口最多约 24000 字 |
+| 浏览器 IndexedDB | 本机完整文字记录；豆包近期窗口最多约 24000 字，Live 注入最多 60 条 / 6500 UTF-8 字节 |
 | 服务端数据目录 | 私有 Key、按用户 scope 保存的助手资料、任务 SQLite、数值用量日志 |
 
 备份完整数据目录，等待通话和后台查询结束，再替换代码并重启。网页与网关同步升级，更新 HTML 的脚本版本。更换域名不会自动迁移浏览器本地缓存；轮换 Being token 会改变 scope，不会自动把旧 scope 的任务迁给新 token。

@@ -13,6 +13,8 @@ deploy-*/
 data/
 mobile/self-test.wav
 doubao-api-key.txt
+openai-api-key.txt
+openai-proxy-url.txt
 agent-url.txt
 .env
 .env.*

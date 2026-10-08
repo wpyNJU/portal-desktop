@@ -2,6 +2,28 @@
 
 本文描述本目录代码的实际行为。网页是通话客户端；豆包负责实时语音理解与直接回复；Being 处理需要外部信息或实际操作的请求；网关持久化任务并安排播报。当前没有另一个本地意图识别模型。
 
+## GPT-Live 可选路径
+
+以下原有章节描述默认豆包模式。浏览器设置选择 GPT-Live 后，沿用链接验证、助手资料、历史缓存和同一任务库，语音传输改为 Live 主 WebSocket；桌面原生语音入口仍使用豆包。
+
+```mermaid
+flowchart LR
+    Browser[浏览器 / PCM16 16 kHz] <--> Gateway[语音网关]
+    Gateway <--> Live[GPT-Live / client delegation]
+    Live -->|委托编号与时间位置| Transcript[匹配用户转写]
+    Transcript -->|复用或创建任务| Queue[同一 scope 串行 Being 查询]
+    Queue --> Being[Being SSE]
+    Being -->|增量正文 / 安全进度类型| Store[(原有任务库)]
+    Store -->|前台空闲 / 当前问题优先| Commentary[分段 commentary]
+    Commentary --> Live
+```
+
+用户插话清空浏览器播放队列并暂停报告，查询持续运行；新音频在检测到静音边界后恢复。Live 的主音频事件没有回复 ID 和结束事件，此边界是应用侧估计，真实打断仍需验证。旧任务只恢复数据，不在接通时逐条朗读或重复提交。旧报告有结果时，在空闲且已开始本轮交流后最多自动询问一次；用户可说“继续报告”或“重播报告”。
+
+Live 可改述后台内容，因此 `commentary.appended` 只作为上下文接收确认，不能当作精确朗读游标。任务全文持久保存，Live 保持会话内交付位置，打断的片段可重复，重连从已有精确游标重新读取。挂断时发 `session.close`，最多等 8 秒接收最终用量；即使没收到也结束本地通话，并记录用量尚未最终确认。
+
+需要本地转接时，只有“语音网关 ↔ GPT-Live”的加密连接经过 SSH 反向隧道和本机 `openai_local_relay.py`。浏览器、Being 查询、任务数据库及豆包仍走原云端链路。本机不读取 OpenAI Key、不解密语音，隧道两端仅监听回环地址。
+
 ## 组件与数据流
 
 ```mermaid

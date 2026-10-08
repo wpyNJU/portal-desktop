@@ -14,6 +14,7 @@ let ctx,ws,mic,source,capture,sink,active=false,starting=false,muted=false,closi
 let nodes=new Set(),nextTime=0,timer,startTime=0,responseId='',questionId='',firstAt=0,firstAudio=false;
 let congestedSince=null,networkWarning=false,endAfterPlayback=false;
 let callGeneration=0,cancelStartup=null,stopping=false;
+let activeProvider='doubao',providerAvailability=null;
 let profileInfo={scope:null,state:'unknown',updated:null,message:''},profilePending=null,profileIntent=null,profileGate=false;
 let agentConfig=null;try{agentConfig=JSON.parse(localStorage.getItem('voice.agent')||'null');}catch{}
 if(!agentConfig?.url||!agentConfig?.scope)agentConfig=null;
@@ -54,6 +55,7 @@ function historyWindow(){
  return selected;
 }
 function rememberEvent(d){
+ if(d.type==='live.input.saved')remember('u-'+d.item_id,'user',d.text);
  if(d.type==='conversation.item.input_audio_transcription.started')historyUser=d.item_id||crypto.randomUUID();
  if(d.type==='conversation.item.input_audio_transcription.completed')remember('u-'+(d.item_id||historyUser),'user',d.text);
  if(d.type==='response.output_text.delta'){historyAssistant=d.response_id||historyAssistant||crypto.randomUUID();remember('a-'+historyAssistant,'assistant',d.delta,'voice',true);}
@@ -111,6 +113,7 @@ registerProcessor('voice-capture', BeingCapture);
 function status(text,title){$('state').textContent=text;if(title)$('title').textContent=title;}
 function controls(){
  for(const id of ['mute','interrupt'])$(id).disabled=!active||stopping;
+ for(const id of ['provider-select','live-voice-select','voice-select'])if($(id))$(id).disabled=active||starting||stopping;
  $('hangup').disabled=stopping||(!active&&!starting);$('test').disabled=active||starting||stopping;
  const button=$('call-toggle');
  button.disabled=stopping;
@@ -132,10 +135,12 @@ function clearAudio(){acknowledgeSegment();reportSegments=[];playbackEpoch++;for
 function listen(){if(active)status(muted?'麦克风已关闭':'我在听，你可以继续说',muted?'已静音':'正在聆听');}
 function play(data){
  if(!ctx||!active)return;
- const bytes=Uint8Array.from(atob(data.delta),c=>c.charCodeAt(0)),pcm=new Float32Array(bytes.buffer);
+ const bytes=Uint8Array.from(atob(data.delta),c=>c.charCodeAt(0));
+ const isPCM16=data.format==='pcm16',pcm=isPCM16?new Int16Array(bytes.buffer):new Float32Array(bytes.buffer);
+ const rate=isPCM16&&data.sample_rate===16000?16000:24000;
  if(!pcm.length)return;
- if(!firstAudio){firstAudio=true;if(firstAt)$('metrics').textContent=`首段语音 ${((performance.now()-firstAt)/1000).toFixed(1)} 秒 · 豆包全双工` ;}
- const b=ctx.createBuffer(1,pcm.length,24000),a=b.getChannelData(0);for(let i=0;i<a.length;i++)a[i]=Number.isFinite(pcm[i])?Math.max(-1,Math.min(1,pcm[i])):0;
+ if(!firstAudio){firstAudio=true;if(firstAt)$('metrics').textContent=`首段语音 ${((performance.now()-firstAt)/1000).toFixed(1)} 秒 · ${isPCM16?'GPT-Live':'豆包'}` ;}
+ const b=ctx.createBuffer(1,pcm.length,rate),a=b.getChannelData(0);for(let i=0;i<a.length;i++)a[i]=Number.isFinite(pcm[i])?Math.max(-1,Math.min(1,isPCM16?pcm[i]/32768:pcm[i])):0;
  const n=ctx.createBufferSource();n.buffer=b;n.connect(ctx.destination);const wasPlaying=nodes.size>0,epoch=playbackEpoch;nodes.add(n);if(!wasPlaying)playback(true);
  nextTime=Math.max(nextTime,ctx.currentTime+.06);n.start(nextTime);nextTime+=b.duration;
  n.onended=()=>{n.disconnect();nodes.delete(n);if(epoch!==playbackEpoch)return;acknowledgeSegment();if(!nodes.size){playback(false);document.body.classList.remove('talking');if(endAfterPlayback)finishFarewell();else listen();}};
@@ -148,6 +153,7 @@ function event(d){
  }
  rememberEvent(d);
  const type=d.type;
+ if(type==='live.audio.delta'){play(d);return;}
  if(type==='task.segment.end'){reportSegments.push({token:d.token,end:nextTime});acknowledgeSegment();return;}
  if(type==='task.updated'){taskRows.set(d.task.id,d.task);renderTasks();return;}
  if(type==='agent.delivery'||type==='agent.progress'||type==='agent.text.delta'||type==='agent.text.done'||type==='agent.text.error'){
@@ -189,6 +195,8 @@ function event(d){
 async function startCall(test=false,profileAccepted=false){
  if(!agentConfig){openSettings();$('agent-config-state').textContent='先粘贴你的助手链接并保存，再开始通话';$('agent-url').focus();return;}
  if(starting||active||stopping||profileGate)return;
+ const provider=$('provider-select')?.value||'doubao';
+ if(provider==='gptlive'&&providerAvailability?.gptlive?.configured===false){openSettings();status('GPT-Live 尚未配置，请先在服务器配置 OpenAI Key','暂时无法开始');return;}
  if(!profileAccepted){
   const scope=agentConfig.scope,generation=++callGeneration;profileGate=true;status('正在读取已保存的助手信息','准备通话');
   if(profileInfo.scope!==scope||['unknown','error','loading','updating'].includes(profileInfo.state))await readProfileTime();
@@ -197,7 +205,7 @@ async function startCall(test=false,profileAccepted=false){
    profileIntent={scope,test};openSettings(false);renderProfilePanel();$('profile-panel').scrollIntoView({block:'center'});return;
   }
  }
- if(starting||active||stopping)return;const generation=++callGeneration;starting=true;closing=false;playbackGeneration=undefined;controls();status('正在启动手机音频','准备通话');
+ if(starting||active||stopping)return;const generation=++callGeneration;activeProvider=provider;starting=true;closing=false;playbackGeneration=undefined;controls();status('正在启动手机音频','准备通话');
  const check=()=>{if(generation!==callGeneration)throw new Error('通话已取消');};
  const cancelled=new Promise((_,reject)=>{cancelStartup=()=>reject(new Error('通话已取消'));});
  const step=(p,ms,message)=>Promise.race([deadline(p,ms,message),cancelled]);
@@ -209,7 +217,6 @@ async function startCall(test=false,profileAccepted=false){
   const unlockTimer=setTimeout(()=>{if(generation===callGeneration&&audioContext.state!=='running'){$('audio-unlock').classList.remove('hidden');status('手机需要一次点击来启用声音','点击下方启用声音');}},900);
   try{await step(audioContext.resume(),20000,'手机音频未启动，请再次点击启用声音');check();}
   finally{clearTimeout(unlockTimer);if(generation===callGeneration)$('audio-unlock').classList.add('hidden');}
-  if(ctx.sampleRate!==16000)throw new Error('浏览器未支持16k音频，请换用最新版浏览器');
   const url=URL.createObjectURL(new Blob([worklet],{type:'text/javascript'}));try{await step(ctx.audioWorklet.addModule(url),10000,'音频组件加载超时，请刷新页面重试');check();}finally{URL.revokeObjectURL(url);}
   capture=new AudioWorkletNode(ctx,'voice-capture');sink=ctx.createGain();sink.gain.value=0;capture.connect(sink).connect(ctx.destination);
   if(test){const recording=await fetch('/call-assets/self-test.wav');if(!recording.ok)throw new Error('未配置测试录音，请直接使用麦克风通话');const b=await ctx.decodeAudioData(await recording.arrayBuffer());source=ctx.createBufferSource();source.buffer=b;}
@@ -219,12 +226,12 @@ async function startCall(test=false,profileAccepted=false){
   status('正在连接语音服务','连接中');
   await step(new Promise((resolve,reject)=>{
    const s=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/pipeline/ws');ws=s;
-   s.onopen=()=>s.send(JSON.stringify({type:'session.start',agent_url:agentConfig.url,voice:$('voice-select').value,history:historyWindow()}));
-   const timeout=setTimeout(()=>{s.close();reject(new Error('语音连接超时，请检查网络后重试'));},18000);
+   s.onopen=()=>s.send(JSON.stringify({type:'session.start',provider:activeProvider,agent_url:agentConfig.url,voice:$('voice-select').value,live_voice:$('live-voice-select')?.value||'marin',history:historyWindow()}));
+   const timeout=setTimeout(()=>{s.close();reject(new Error('语音连接超时，请检查网络后重试'));},activeProvider==='gptlive'?35000:18000);
    s.onmessage=e=>{if(ws!==s)return;const d=JSON.parse(e.data);if(d.type==='session.created'){clearTimeout(timeout);resolve();}else if(d.type==='error'&&!active){clearTimeout(timeout);reject(new Error(d.message||'会话建立失败'));}else event(d);};
    s.onerror=()=>{clearTimeout(timeout);reject(new Error('连接失败'));};
    s.onclose=()=>{clearTimeout(timeout);if(ws!==s)return;if(starting)reject(new Error('连接中断'));if(active&&!closing)hangup().then(()=>status('连接已断开，请重新开始','通话已结束'));};
-  }),20000,'语音连接超时，请重试');check();cancelStartup=null;
+  }),activeProvider==='gptlive'?37000:20000,'语音连接超时，请重试');check();cancelStartup=null;
   active=true;starting=false;muted=false;firstAudio=false;firstAt=0;responseId='';questionId='';congestedSince=null;networkWarning=false;$('agent-results').textContent='';$('heard').textContent='—';$('answer').textContent='';$('ack').textContent='';$('mute').textContent='麦克风开';
   capture.port.onmessage=e=>{
    if(!active||muted)return;
@@ -251,7 +258,7 @@ async function hangup(){
  closing=true;active=false;endAfterPlayback=false;clearInterval(timer);clearAudio();capture?.port.postMessage(false);
  try{source?.disconnect();capture?.disconnect();sink?.disconnect();}catch{}
  mic?.getTracks().forEach(t=>t.stop());mic=null;
- const old=ws;ws=null;if(old?.readyState===1){old.send(JSON.stringify({type:'session.close'}));setTimeout(()=>old.close(),1200);}else old?.close();
+ const old=ws;ws=null;if(old?.readyState===1){old.send(JSON.stringify({type:'session.close'}));setTimeout(()=>old.close(),activeProvider==='gptlive'?10000:1200);}else old?.close();
  if(ctx&&ctx.state!=='closed')await deadline(ctx.close(),1500,'关闭音频超时').catch(()=>{});ctx=null;source=null;capture=null;starting=false;
  stopping=false;document.body.classList.remove('active');$('clock').textContent='未通话';$('ack').textContent='';controls();status('点击可以再次开始','通话已结束');
 }
@@ -285,6 +292,28 @@ renderCaptions();controls();
 const savedVoice=readSetting('voice.selected','zh_female_vv_jupiter_bigtts');
 if([...$('voice-select').options].some(o=>o.value===savedVoice))$('voice-select').value=savedVoice;
 $('voice-select').onchange=()=>storeSetting('voice.selected',$('voice-select').value);
+
+function renderProvider(){
+ const provider=$('provider-select')?.value||'doubao';
+ $('doubao-voice-field')?.classList.toggle('hidden',provider!=='doubao');
+ $('live-voice-field')?.classList.toggle('hidden',provider!=='gptlive');
+ if($('history-window-note'))$('history-window-note').textContent=provider==='gptlive'?'完整文字记录保存在此浏览器。GPT-Live 续聊会载入较短的近期记录；更早内容仍可在历史对话中查看。清除浏览器数据会清除此记录。':'完整文字记录保存在此浏览器。续聊自动载入最近 24000 字；更早内容保留在历史对话中。清除浏览器数据会清除此记录。';
+ const hint=$('provider-state');if(!hint)return;
+ if(provider==='gptlive')hint.textContent=providerAvailability?.gptlive?.configured===false?'尚未配置 OpenAI Key，配置后刷新即可使用。':providerAvailability?.gptlive?.configured?'GPT-Live · Key 已配置，接通时验证权限。切换下次通话生效。':'GPT-Live · 正在检查服务配置…';
+ else hint.textContent='豆包 · 切换下次通话生效。';
+}
+async function loadProviders(){
+ try{const response=await deadline(fetch('/pipeline/health',{cache:'no-store'}),6000,'timeout');if(response.ok)providerAvailability=(await response.json()).providers||null;}catch{}
+ renderProvider();
+ if(!providerAvailability&&$('provider-select')?.value==='gptlive')$('provider-state').textContent='未能读取服务配置，开始通话时会再次检查。';
+}
+if($('provider-select')){
+ $('provider-select').value=readSetting('voice.provider','doubao')==='gptlive'?'gptlive':'doubao';
+ $('live-voice-select').value=['marin','quartz','ripple'].includes(readSetting('voice.live-voice','marin'))?readSetting('voice.live-voice','marin'):'marin';
+ $('provider-select').onchange=()=>{storeSetting('voice.provider',$('provider-select').value);renderProvider();loadProviders();};
+ $('live-voice-select').onchange=()=>storeSetting('voice.live-voice',$('live-voice-select').value);
+ renderProvider();loadProviders();
+}
 
 function renderProfileTime(value){
  const date=value?new Date(value):null;

@@ -4,6 +4,20 @@
 
 **完整网页版交付**：[打包与部署](DEPLOYMENT.md) · [流程图与状态说明](FLOW.md) · [第三方字体许可](THIRD_PARTY_NOTICES.md)。在仓库根目录运行 `npm run package:voice-web`，生成 `out/being-voice-web.zip`；解压安装依赖后运行 `python serve.py` 即可提供页面和 WebSocket。
 
+## 浏览器 GPT-Live 模式
+
+设置中的“语音模式”可选择豆包或 GPT-Live，默认豆包，偏好保存在本浏览器，切换在下次通话生效。GPT-Live 使用 `gpt-live-1`、服务端主 WebSocket 和 `client` 委托，后台仍是 Being，不另行调用 Responses 模型。可选择 Marin、Quartz、Ripple；中文发音与实际响应速度需在账号开通后实测。
+
+服务器数据目录新增可选 `openai-api-key.txt`，或设置 `OPENAI_API_KEY`。每次连接重新读取，放入文件后刷新网页即可；Key 不进入浏览器、Git 或部署包。健康接口只公开配置是否存在，不能证明额度、接口权限或网络可用。
+
+GPT-Live 返回的委托事件只有编号和时间位置，网关用实时转写整理当前请求，再交给原有 Being 流式接口。同一 scope 的 Live 查询串行提交，重复查询复用原任务；不同模式或其他客户端的请求并未全局串行。挂断和打断均不取消已提交的 Being 任务。
+
+完整历史和查询结果仍保存；Live 本次启动仅注入近期最多 60 条、合计 6500 UTF-8 字节的历史，并加载助手资料及最近八项任务索引，避免超过其输入限制。结果分段通过 `session.commentary.append` 回传，每条限制在 480 UTF-8 字节以内。Live 可能改述：接收确认不是朗读完成确认，网关不会据此推进豆包的精确全文游标；当前通话记录已交付片段，打断后从未确认片段起继续，重新接通可能重复报告。
+
+Live 原生音频没有回复编号或结束事件。本实现利用转写、音频静音间隔和浏览器播放回执清空旧音频、等待空闲及恢复播放，属于待真人验证的适配；网络突发和背景回声下不能保证准确划分每轮。当前采用网关转发 PCM16/16 kHz，未切换为浏览器直连 WebRTC，不能据离线测试承诺与官方演示相同的延迟。用量只记录累计秒数的最终值及是否收到 `session.closed`，不重复累加累计事件。
+
+协议依据：[WebSocket](https://developers.openai.com/api/docs/guides/voice-websockets?api=live)、[客户端委托](https://developers.openai.com/api/docs/guides/live-delegation)、[会话控制](https://developers.openai.com/api/docs/guides/voice-server-controls?api=live)。离线测试用模拟供应商验证，不调用收费接口。
+
 ## 接通与首句响应
 
 - 已保存任务的索引和当前续播对象在 `session.create` 中一次载入。初始化观察器恢复所有任务的状态基线，不把历史 `task.updated` 当作新变化逐条重发提示词；即使旧任务超过索引的八条窗口，也不会触发重复更新。
@@ -63,6 +77,7 @@ python -m pip install -r services/voice-gateway/requirements.txt
 由部署环境提供以下私有文件，不要放入 Git：
 
 - `doubao-api-key.txt`：豆包 API Key，仅服务器读取。
+- `openai-api-key.txt`：可选的 OpenAI Key，仅 GPT-Live 模式读取；也可使用服务器环境变量 `OPENAI_API_KEY`。
 - `agent-url.txt`：可选的旧默认 Being streaming 链接，包含 token，仅供旧资料兼容使用；新安装不需要。每个新连接仍须提供自己的 Being 链接并通过验证。
 - 运行时生成的 `agent-tasks.sqlite3`、`assistant-profile*.json` 和 `logs/`：查询结果、助手资料和用量数据，不属于源码。
 
@@ -84,7 +99,7 @@ python services/voice-gateway/doubao_server.py
 python services/voice-gateway/run_tests.py
 ```
 
-十六个离线脚本只使用 Python 标准库、临时数据库和模拟音频/Agent。覆盖插话时缺失/重复/迟到识别事件、句末抢接与确认迟到、最新问题优先、排队后重排、句末让位与游标续读、优先级持久化，以及实际 HTTP 边界的请求正文与通话历史分离、真实协议中的无编号音频帧、输出互斥、旧回复过滤、标题与原请求分离、旧库迁移、多任务主题、重复查询、流式报告、断线续接、播放游标、部分失败和空闲调度。新增排队时历史预读超时、空中间结束事件、唯一场景恢复、上游让位中断、部分流断开及安全错误持久化回归。不会读取真实密钥、录音或调用付费接口。
+十八个离线脚本只使用 Python 标准库、临时数据库和模拟音频/Agent。覆盖插话时缺失/重复/迟到识别事件、句末抢接与确认迟到、最新问题优先、排队后重排、句末让位与游标续读、优先级持久化，以及实际 HTTP 边界的请求正文与通话历史分离、真实协议中的无编号音频帧、输出互斥、旧回复过滤、标题与原请求分离、旧库迁移、多任务主题、重复查询、流式报告、断线续接、播放游标、部分失败和空闲调度。新增排队时历史预读超时、空中间结束事件、唯一场景恢复、上游让位中断、部分流断开及安全错误持久化回归。不会读取真实密钥、录音或调用付费接口。
 
 客户端回归：`npx vitest run tests/voice-playback.test.ts tests/voice-mobile.test.ts tests/voice-call.test.ts tests/voice-service.test.ts tests/voice-capture.test.ts`。使用实际播放/采集代码与模拟设备时钟覆盖长队列中断、末尾回调延迟、旧回调隔离以及 16/44.1/48 kHz 输入。模拟测试不能代表真人麦克风的回声消除效果，也未新增本地语义打断模型。
 
@@ -97,3 +112,5 @@ python services/voice-gateway/run_tests.py
 同日的转交改动以 24000 字合成通话历史验证：豆包将“查它这周的发布进度，先别修改”整理为 25 字工具需求，正确保留项目、时间和只读限制，没有转储历史。该测试只检查豆包工具参数，未向真实 Being 提交请求；实际请求正文由上述离线 HTTP 边界测试验证。
 
 最近问题优先调度于 2026-09-29 部署。新增九个场景覆盖当前交流优先、倒序待播、追问后的动态重排、句末让位、旧报告续播征询、过时过渡句、重复查询复用及旧库迁移；十二个离线脚本全部通过。真实豆包交接/打断联测首次等待后续回复结束超时，补充事件记录后连续两次通过（最后一次保持与客户端相同的持续静音输入）；首次超时未复现，不能据此声称网络和供应商响应已完全稳定。上线前确认没有活跃通话或查询，迁移保留了已有正文和播放位置。
+
+2026-10-08：国内服务器直连 OpenAI 超时，改为仅将 OpenAI TLS 连接经本机回环 CONNECT 代理及 SSH 反向隧道转发。真实 GPT-Live + 合成输入 + 内存模拟 Being 联测通过：2.78 秒输入开始后 3.90 秒返回首段语音（约结束后 1.12 秒，单次样本）；委托仅提交一次；报告中插入新问题后清空旧播放、回答“四”，任务仍保存；`session.closed` 确认本次会话 25 秒。没有向真实 Being 提交业务任务，也不代表真机回声环境已验证。18 个离线回归脚本、7 个独立部署包/ASGI 测试、连接启动测试及 42 项客户端测试通过。空闲上线保留 81 条已有任务，公网 WebSocket 已实际接通 GPT-Live。

@@ -20,6 +20,7 @@ class PackageTests(unittest.TestCase):
                 shutil.copyfile(package_builder.HERE/name,target)
             (root/'data').mkdir();(root/'data'/'agent-tasks.sqlite3').write_text('private fixture')
             (root/'doubao-api-key.txt').write_text('fixture-secret')
+            (root/'openai-api-key.txt').write_text('fixture-live-secret')
             (root/'debug-dump.json').write_text('private fixture')
             (root/'mobile'/'self-test.wav').write_bytes(b'private recording fixture')
             with patch.object(package_builder,'HERE',root):archive=package_builder.build(Path(folder)/'bundle.zip')
@@ -34,15 +35,18 @@ class PackageTests(unittest.TestCase):
                 self.assertIn('FLOW.md',manifest['files'])
                 self.assertFalse(any('fixture-secret' in bundle.read(name).decode(errors='ignore') for name in bundle.namelist() if name.endswith('.txt')))
                 self.assertNotIn('doubao-api-key.txt',manifest['files'])
+                self.assertNotIn('openai-api-key.txt',manifest['files'])
+                self.assertIn('live_session.py',manifest['files'])
                 self.assertNotIn('debug-dump.json',manifest['files'])
                 self.assertNotIn('mobile/self-test.wav',manifest['files'])
 
     def test_even_an_accidental_allowlist_entry_cannot_export_credentials(self):
-        with tempfile.TemporaryDirectory() as folder:
-            root=Path(folder);(root/'package-files.json').write_text('["doubao-api-key.txt"]')
-            (root/'doubao-api-key.txt').write_text('fixture-secret')
-            with patch.object(package_builder,'HERE',root),self.assertRaisesRegex(ValueError,'Private runtime'):
-                package_builder.build(root/'export.zip')
+        for name in ('doubao-api-key.txt', 'openai-api-key.txt', 'openai-proxy-url.txt'):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as folder:
+                root=Path(folder);(root/'package-files.json').write_text(json.dumps([name]))
+                (root/name).write_text('fixture-secret')
+                with patch.object(package_builder,'HERE',root),self.assertRaisesRegex(ValueError,'Private runtime'):
+                    package_builder.build(root/'export.zip')
 
 
 class WebTests(unittest.TestCase):
@@ -66,6 +70,7 @@ class WebTests(unittest.TestCase):
     def test_web_assets_and_keyless_start(self):
         response=self.client.get('/mobile/')
         self.assertEqual(response.status_code,200);self.assertIn('点击开始通话',response.text)
+        self.assertIn('id="provider-select"',response.text);self.assertIn('GPT-Live',response.text)
         self.assertEqual(response.headers['cache-control'],'no-store')
         self.assertEqual(self.client.get('/').url.path,'/mobile/')
         for path in ('call.js','voice-ui.woff2','voice-sans.woff2'):
@@ -75,7 +80,7 @@ class WebTests(unittest.TestCase):
         self.assertTrue((Path(self.directory.name)/'data'/'agent-tasks.sqlite3').exists())
 
     def test_runtime_and_source_files_are_never_served(self):
-        for path in ('/call-assets/doubao-api-key.txt','/call-assets/agent-tasks.sqlite3',
+        for path in ('/call-assets/doubao-api-key.txt','/call-assets/openai-api-key.txt','/openai-api-key.txt','/call-assets/agent-tasks.sqlite3',
                      '/call-assets/../doubao_config.py','/data/agent-tasks.sqlite3','/doubao_config.py'):
             self.assertEqual(self.client.get(path).status_code,404)
 
@@ -83,6 +88,20 @@ class WebTests(unittest.TestCase):
         with self.client.websocket_connect('/pipeline/ws') as socket:
             socket.send_json({'type':'agent.configure','agent_url':'invalid'})
             self.assertEqual(socket.receive_json()['type'],'error')
+
+    def test_gpt_live_keyless_route_validates_link_then_returns_actionable_error(self):
+        with patch.dict(os.environ, {'OPENAI_API_KEY': ''}), \
+             patch('agent_bridge.AgentBridge.verify_access', new=AsyncMock()) as verify, \
+             patch('live_session.websockets.connect', side_effect=AssertionError('No provider calls')):
+            with self.client.websocket_connect('/pipeline/ws') as socket:
+                socket.send_json({'type': 'session.start', 'provider': 'gptlive',
+                                  'agent_url': 'https://echo.beings.town/fixture/?token=test-link-1234'})
+                for _ in range(10):
+                    event = socket.receive_json()
+                    if event['type'] == 'error':break
+                self.assertIn('尚未配置', event['message'])
+                self.assertNotIn('test-link-1234', json.dumps(event))
+            verify.assert_awaited_once()
 
     def test_new_install_configures_link_and_reads_profile_without_default_agent_file(self):
         with patch('agent_bridge.AgentBridge.verify_access',new=AsyncMock()) as verify:

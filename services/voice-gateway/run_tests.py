@@ -8,6 +8,8 @@ tests=(
     'test_task_context.py',
     'test_task_status.py',
     'test_agent_recovery.py',
+    'test_live_session.py',
+    'test_openai_local_relay.py',
     'test_barge_in.py',
     'test_report_priority.py',
     'test_agent_handoff.py',
