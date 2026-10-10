@@ -4,7 +4,10 @@ import copy
 import logging
 import threading
 import time
+import json
 from agent_errors import AgentFailure
+
+SAFE_STAGES = frozenset({'queued','accepted','awaiting_reply','thinking','tool','text'})
 
 logger = logging.getLogger('voice.connection')
 
@@ -19,7 +22,18 @@ class BackgroundTasks:
         self.progress = {}
         self.scopes = {}
 
-    def submit(self, scope, identity, cacheable, message, bridge, context, title=None):
+    def submit(self, scope, identity, cacheable, message, bridge, context, title=None, request_id=None, intent=None, parent_id=''):
+        intent_json=json.dumps(intent,sort_keys=True,ensure_ascii=False) if intent else ''
+        fingerprint=json.dumps([intent if intent else message,parent_id],sort_keys=True,ensure_ascii=False)
+        if request_id:
+            prior=self.store.request_match(scope,request_id,fingerprint)
+            if prior:return prior,True
+        if intent_json:
+            prior=self.store.running_intent(scope,intent_json,parent_id)
+            if prior:
+                if request_id:self.store.bind_request(scope,request_id,prior,fingerprint)
+                self.store.touch(scope,prior)
+                return prior,True
         now = time.monotonic()
         self.entries = {k: v for k, v in self.entries.items()
                         if not v['job'].done() or now-v['finished'] < 60}
@@ -30,6 +44,8 @@ class BackgroundTasks:
             self.store.touch(scope,previous['id'])
             return previous['id'], True
         task_id = self.store.create(scope, message, title)
+        if intent_json:self.store.set_intent(task_id,intent_json,parent_id)
+        if request_id:self.store.bind_request(scope,request_id,task_id,fingerprint)
         job = asyncio.create_task(self.run(task_id, scope, message, bridge, copy.deepcopy(context)))
         entry = {'id': task_id, 'job': job, 'finished': float('inf')}
         if identity:
@@ -49,9 +65,11 @@ class BackgroundTasks:
         stop = threading.Event(); previous_stage = None
         def stage(name):
             nonlocal last,previous_stage
-            if name!=previous_stage:
-                logger.info("background_task_stage id=%s stage=%s elapsed=%.3f",task_id,name,time.monotonic()-started);previous_stage=name
             last = time.monotonic()
+            if not isinstance(name,str) or name not in SAFE_STAGES:return
+            if name!=previous_stage:
+                self.store.update(scope, task_id, stage=name, stage_updated=time.time())
+                logger.info("background_task_stage id=%s stage=%s elapsed=%.3f",task_id,name,time.monotonic()-started);previous_stage=name
             self.progress[task_id] = (name, round(last-started))
         def emit(text):
             if not isinstance(text, str) or not text:
@@ -82,7 +100,10 @@ class BackgroundTasks:
             if not request.done():request.cancel()
             await asyncio.gather(request, return_exceptions=True)
             # A disconnected listener may have paused/deferred delivery. Preserve that choice.
-            self.store.update(scope, task_id, state=state, text=''.join(parts),
+            body=''.join(parts)
+            # A bounded literal excerpt, never reasoning or a generated conclusion.
+            summary=('原文摘录：'+body.strip()[:235]) if body.strip() else ''
+            self.store.update(scope, task_id, state=state, text=body,stage=state,stage_updated=time.time(),summary=summary,
                               error_code=failure.code if failure else '',error_message=failure.public_message if failure else '')
             logger.info('background_task_done id=%s state=%s elapsed=%.3f', task_id, state, time.monotonic()-started)
 

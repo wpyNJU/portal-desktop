@@ -18,7 +18,7 @@ import { Dialog } from "../shared/components/dialog";
 import { EditContextMenu } from "../shared/components/context-menu";
 import { PlaceHeading } from "./components/navigation";
 import { VoiceCall } from '../voice/models/call';
-import { VoiceCallDialog } from '../voice/page';
+import { VoiceCallPanel } from '../voice/page';
 import logo from "../../../resources/branding/logo.png";
 import logoWhite from "../../../resources/branding/logo-white.png";
 export function App({ model }: { model: AppModel }) {
@@ -29,6 +29,7 @@ export function App({ model }: { model: AppModel }) {
   const voice = useModel(voiceModel);
   const startCall = () => {
     if (!app.snapshot?.settings.hasToken) { app.showSettings(); return; }
+    app.navigate("chat");
     void voice.start(app.snapshot.settings.endpoint, app.snapshot.chatScene?.scene_id || '',
       app.town.displayName || app.snapshot.settings.being || 'Being');
   };
@@ -160,7 +161,8 @@ export function App({ model }: { model: AppModel }) {
               />
             </section>
           </div>
-          {app.view !== "chat" && app.placePresentation === "panel" && (
+          <VoiceCallPanel model={voice} onRetry={startCall} />
+          {!voice.open && app.view !== "chat" && app.placePresentation === "panel" && (
             <>
               <PlaceResizeHandle app={app} />
               <aside id="place-panel" className="place-surface" aria-labelledby="view-title"
@@ -173,7 +175,6 @@ export function App({ model }: { model: AppModel }) {
           <Browser model={app} />
         </div>
       </main>
-      <VoiceCallDialog model={voice} onRetry={startCall} />
       <Diagnostics model={app} />
       <Dialog
         id="place-sheet"

@@ -7,13 +7,15 @@ import { requirePortalSource } from './portal-source.mjs';
 if (process.platform !== 'darwin') throw new Error('macOS signing must run on macOS.');
 const localTest = process.env.PORTAL_DESKTOP_MAC_LOCAL_TEST === '1';
 if (localTest && process.env.GITHUB_REF?.startsWith('refs/tags/')) throw new Error('Local-test signing is forbidden for release tags.');
+const adhocRelease = process.env.PORTAL_DESKTOP_MAC_ADHOC_RELEASE === '1';
+const adhoc = localTest || adhocRelease;
 const signing = JSON.parse(await readFile(new URL('../desktop/macos-signing.json', import.meta.url), 'utf8'));
 const resources = path.resolve('resources');
 const stage = await mkdtemp(path.join(resources, '.portal-sign-'));
 try {
   // Never modify an executable in place: a local Portal may still be using it.
   const candidate = path.join(stage, 'heart-portal');
-  if (localTest) {
+  if (adhoc) {
     await copyFile(path.join(resources, 'heart-portal'), candidate);
     execFileSync('/usr/bin/codesign', ['--force', '--sign', '-', '--identifier', signing.portalIdentifier,
       '--options', 'runtime', '--timestamp=none', candidate], { stdio: 'inherit' });
@@ -29,7 +31,7 @@ try {
   execFileSync('/usr/bin/codesign', ['--verify', '--strict', candidate], { stdio: 'inherit' });
   await rename(candidate, path.join(resources, 'heart-portal'));
   await writeRuntimeBundle();
-  console.log(`Signed Portal before generating its manifest (${localTest ? 'local test only; not distributable' : 'upstream Developer ID policy; notarization deferred'}).`);
+  console.log(`Signed Portal before generating its manifest (${adhoc ? 'ad-hoc signature; no Developer ID; manual installation only' : 'upstream Developer ID policy; notarization deferred'}).`);
 } finally {
   await rm(stage, { recursive: true, force: true });
 }

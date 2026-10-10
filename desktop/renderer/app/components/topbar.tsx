@@ -227,7 +227,7 @@ export function Topbar({ model, onCall, inCall = false }: { model: AppModel; onC
         </button>
         <button id="start-voice-call" type="button" className={`topbar-icon-button voice-call-trigger${inCall ? ' in-call' : ''}`}
           aria-label={inCall ? '返回语音通话' : '发起语音通话'} title={inCall ? '返回语音通话' : '语音通话'}
-          aria-haspopup="dialog" aria-controls="voice-call" onClick={onCall}>
+          aria-controls="voice-call" onClick={onCall}>
           <PhoneIcon />
         </button>
         <details

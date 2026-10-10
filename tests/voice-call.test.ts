@@ -11,15 +11,16 @@ function setup() {
   const listeners = new Set<(event: VoiceEvent) => void>();
   const api: VoiceAPI = { profile: vi.fn().mockResolvedValue({ updatedAt: '2026-09-17T10:56:24Z' }), start: vi.fn().mockResolvedValue(undefined), send: vi.fn().mockResolvedValue(undefined), stop: vi.fn().mockResolvedValue(undefined),
     onEvent: callback => { listeners.add(callback); return () => { listeners.delete(callback); }; } };
-  const audio = { open: vi.fn().mockResolvedValue(undefined), close: vi.fn(), clear: vi.fn(), play: vi.fn(), segment: vi.fn(), setEnabled: vi.fn(), busy: false };
+  const audio = { open: vi.fn().mockResolvedValue(undefined), close: vi.fn(), clear: vi.fn(), pause: vi.fn(), resume: vi.fn(), play: vi.fn(), segment: vi.fn(), setEnabled: vi.fn(), setNearEndProtection: vi.fn(), busy: false };
   let drained = () => {};
-  const model = new VoiceCall(api, (...args) => { drained = args[3]; return audio as unknown as CallAudio; });
+  let diagnostic: (...args: any[]) => void = () => {};
+  const model = new VoiceCall(api, (...args) => { drained = args[3]; diagnostic = args[5]!; return audio as unknown as CallAudio; });
   const start = () => model.start('https://example.com/being', 'desktop-fixture', 'being');
   const event = (type: string, data: Record<string, unknown> = {}) => {
     const input = vi.mocked(api.start).mock.calls.at(-1)![0];
     for (const listener of listeners) listener({ callId: input.callId, data: { type, ...data } });
   };
-  return { model, audio, api, start, event, listeners, drained: () => drained() };
+  return { model, audio, api, start, event, listeners, diagnostic: (event: any) => diagnostic(event), drained: () => drained() };
 }
 afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
 test('call is active only after microphone and service are ready, repeated clicks do not redial', async () => {
@@ -34,11 +35,15 @@ test('cancel during microphone permission wait releases a late stream', async ()
   model.dismiss(); resolve(); await pending;
   expect(model.open).toBe(false); expect(model.phase).toBe('ended'); expect(audio.close).toHaveBeenCalled(); expect(api.stop).toHaveBeenCalled();
 });
-test('muting controls the capture device and protocol, user speech clears all playback', async () => {
+test('muting controls capture and confirmed input pauses until semantic decision', async () => {
   const { model, start, event, api, audio } = setup(); await start(); event('session.created');
   model.toggleMute(); expect(audio.setEnabled).toHaveBeenLastCalledWith(false);
   expect(vi.mocked(api.send).mock.calls.at(-1)![1]).toEqual({ type: 'input_audio_mute.commit' });
-  event('conversation.item.input_audio_transcription.started'); expect(audio.clear).toHaveBeenCalled();
+  const clears = audio.clear.mock.calls.length;
+  event('speech.input.pending'); expect(audio.pause).toHaveBeenCalledWith(true);
+  event('conversation.item.input_audio_transcription.started'); expect(audio.clear).toHaveBeenCalledTimes(clears);
+  event('speech.input.resume'); expect(audio.resume).toHaveBeenCalled();
+  event('playback.clear'); expect(audio.clear).toHaveBeenCalledTimes(clears + 1);
   model.dismiss(); expect(api.stop).toHaveBeenCalled(); expect(api.send).not.toHaveBeenCalledWith(expect.anything(), { type: 'response.cancel' });
 });
 test('transport errors stay visible and retry creates a fresh call', async () => {
@@ -115,4 +120,89 @@ test('unavailable profile status allows retry without pretending the cache is em
   const { model, api, start } = setup(); vi.mocked(api.profile).mockRejectedValueOnce(new Error('offline'));
   await start(); expect(model.phase).toBe('setup'); expect(model.profileState).toBe('error'); expect(api.start).not.toHaveBeenCalled();
   await model.readProfile(); expect(api.start).toHaveBeenCalledOnce(); model.dispose();
+});
+
+test('a backchannel resumes buffered audio and preserves the current answer', async () => {
+  const { model, start, event, audio } = setup(); await start(); event('session.created');
+  event('response.output_text.delta', { response_id: 'r1', delta: '目前有两个待确认事项。' });
+  event('speech.input.pending'); event('conversation.item.input_audio_transcription.started');
+  event('speech.input.resume'); event('conversation.item.input_audio_transcription.completed', { item_id: 'q2', text: '嗯' });
+  expect(model.answer).toBe('目前有两个待确认事项。'); expect(audio.resume).toHaveBeenCalledOnce();
+  event('speech.input.pending'); event('playback.clear');
+  event('conversation.item.input_audio_transcription.completed', { item_id: 'q3', text: '换一个问题' });
+  expect(model.answer).toBe(''); expect(model.status).toBe('正在回应你'); model.dispose();
+});
+
+test('native background tasks have independent stages and reject late terminal progress', async () => {
+ const t=setup();await t.start();t.event('session.created');
+ t.event('task.updated',{task:{id:'one',title:'查询一',state:'running',stage:'thinking',summary:'正在核对',stage_updated:10}});
+ t.event('task.updated',{task:{id:'two',title:'查询二',state:'running',stage:'queued',stage_updated:10}});
+ t.event('agent.progress',{call_id:'one',stage:'tool',text:'已找到两条信息',elapsed:20});
+ t.event('agent.progress',{call_id:'two',stage:'thinking',text:'正在分析第二项',elapsed:5});
+ expect(t.model.tasks.get('one')?.progress).toBe('已找到两条信息');expect(t.model.tasks.get('two')?.stage).toBe('thinking');
+ t.event('task.updated',{task:{id:'one',state:'completed',delivery:'awaiting_choice',cursor:0,length:80,stage:'completed',summary:'已核对两项',stage_updated:30}});
+ t.event('agent.progress',{call_id:'one',stage:'thinking',text:'仍在查询',elapsed:1});
+ t.event('task.updated',{task:{id:'one',state:'running',stage:'tool',stage_updated:25}});
+ expect(t.model.tasks.get('one')?.state).toBe('completed');expect(t.model.taskLabel(t.model.tasks.get('one')!)).toBe('已完成');
+ expect(t.model.tasks.get('two')?.progress).toBe('正在分析第二项');t.model.dispose();
+});
+test('background progress and completion do not overwrite foreground text or control audio', async () => {
+ const t=setup();await t.start();t.event('session.created');
+ t.event('conversation.item.input_audio_transcription.completed',{item_id:'now',text:'先回答我当前这个问题'});
+ t.event('response.output_text.delta',{response_id:'current',delta:'当前回答'});
+ const clears=t.audio.clear.mock.calls.length,status=t.model.status;
+ t.event('agent.progress',{generation:999,call_id:'old',stage:'thinking',text:'旧任务正在分析',elapsed:3});
+ t.event('agent.opening',{text:'我去查一下'});t.event('agent.status',{text:'旧结果已保存'});
+ t.event('agent.text.delta',{call_id:'old',offset:0,delta:'旧任务完整结果'});
+ t.event('task.updated',{task:{id:'old',title:'旧查询',state:'completed',summary:'已完成',stage_updated:20}});
+ expect(t.model.heard).toBe('先回答我当前这个问题');expect(t.model.answer).toBe('当前回答');expect(t.model.status).toBe(status);
+ expect(t.model.tasks.get('old')?.body).toBe('旧任务完整结果');expect(t.audio.clear).toHaveBeenCalledTimes(clears);expect(t.audio.play).not.toHaveBeenCalled();
+ t.model.dispose();
+});
+test('restored completion stays quiet, task errors remain distinct, and reconnect resets state', async () => {
+ const t=setup();await t.start();t.event('session.created');const status=t.model.status;
+ t.event('task.updated',{task:{id:'restored',title:'之前的任务',state:'completed',summary:'保存的结果',stage_updated:100}});
+ t.event('task.updated',{task:{id:'failed',title:'失败任务',state:'failed',summary:'网络失败',stage_updated:200}});
+ expect(t.model.taskLabel(t.model.tasks.get('restored')!)).toBe('已完成');expect(t.model.taskLabel(t.model.tasks.get('failed')!)).toBe('查询失败');
+ expect(t.model.status).toBe(status);expect(t.model.phase).toBe('active');expect(t.audio.play).not.toHaveBeenCalled();
+ t.model.end();expect(t.model.tasks.size).toBe(0);expect(t.model.taskStatus).toBe('');await t.start();t.event('session.created');
+ expect(t.model.taskRows).toEqual([]);expect(t.model.taskStatus).toBe('');t.model.dispose();
+});
+
+test('native task panel prioritizes older running work over restored completed history', async () => {
+ const t=setup();await t.start();t.event('session.created');
+ t.event('task.updated',{task:{id:'still-running',title:'还在执行的旧任务',state:'running',stage:'tool'}});
+ for(let i=0;i<10;i++)t.event('task.updated',{task:{id:`history-${i}`,title:`历史任务${i}`,state:'completed'}});
+ expect(t.model.taskRows).toHaveLength(1);expect(t.model.taskRows[0].id).toBe('still-running');
+ expect(t.model.historyTaskRows).toHaveLength(10);expect(t.model.historyTaskRows[0].id).toBe('history-9');
+ t.model.dispose();
+});
+
+test('interrupted tasks remain terminal and reject late running stage updates', async () => {
+ const t=setup();await t.start();t.event('session.created');
+ t.event('task.updated',{task:{id:'interrupted',title:'中断任务',state:'interrupted',stage:'interrupted',stage_updated:30}});
+ t.event('agent.progress',{call_id:'interrupted',stage:'tool',text:'迟到阶段',elapsed:10,stage_updated:10});
+ t.event('task.updated',{task:{id:'interrupted',state:'running',stage:'thinking',stage_updated:20}});
+ const row=t.model.tasks.get('interrupted')!;expect(row.state).toBe('interrupted');expect(t.model.taskLabel(row)).toBe('查询中断');
+ t.model.dispose();
+});
+
+test('renderer audio diagnostics carry the active generation',async()=>{
+ const t=setup();await t.start();t.event('session.created');t.event('playback.clear',{generation:8});
+ t.diagnostic({type:'client.diagnostic',reason:'voice_audio_state',state:'scheduled',context_state:'running',paused_ms:0,queued_ms:200,frames:1});
+ expect(vi.mocked(t.api.send).mock.calls.at(-1)![1]).toEqual({type:'client.diagnostic',reason:'voice_audio_state',state:'scheduled',context_state:'running',paused_ms:0,queued_ms:200,frames:1,generation:8});t.model.dispose();
+});
+
+test('compact task panel shows three live items without deleting folded history',async()=>{
+ const t=setup();await t.start();t.event('session.created');
+ for(let i=0;i<5;i++)t.event('task.updated',{task:{id:`live-${i}`,state:'running',title:`执行${i}`}});
+ for(let i=0;i<45;i++)t.event('task.updated',{task:{id:`past-${i}`,state:i===0?'interrupted':'completed',summary:'保留的原文摘录'}});
+ expect(t.model.taskRows.map(row=>row.id)).toEqual(['live-4','live-3','live-2']);expect(t.model.historyTaskRows).toHaveLength(45);
+ expect(t.model.tasks.has('live-0')).toBe(true);expect(t.model.tasks.has('past-0')).toBe(true);t.model.dispose();
+});
+
+test('ending a native call closes the side panel and leaves error recovery available',async()=>{
+ const t=setup();await t.start();t.event('session.created');expect(t.model.open).toBe(true);
+ t.model.end();expect(t.model.open).toBe(false);await t.start();t.event('error',{message:'连接错误'});
+ expect(t.model.open).toBe(true);expect(t.model.phase).toBe('error');t.model.dispose();
 });

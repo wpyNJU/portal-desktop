@@ -3,11 +3,23 @@ import { VOICE_OPTIONS, type VoiceAPI, type VoiceCommand, type VoiceEvent } from
 import { CallAudio } from '../services/audio';
 import { VoiceHistoryStore, contextWindow, type VoiceRecord } from '../services/history';
 
+export interface VoiceTask {
+  id: string; title: string; state: string; delivery: string; cursor: number; length: number;
+  stage: string; summary: string; stageUpdated: number; elapsed: number; progress: string; body: string;
+}
+const terminalTask = (state: string) => ['completed', 'failed', 'cancelled', 'canceled', 'error', 'interrupted'].includes(state);
+const taskTime = (value: unknown) => typeof value === 'number' && Number.isFinite(value) ? value :
+  typeof value === 'string' ? (Date.parse(value) || 0) : 0;
+
 export class VoiceCall extends Store {
   open = false;
   phase: 'idle' | 'preparing' | 'setup' | 'connecting' | 'active' | 'ended' | 'error' = 'idle';
   name = 'Being'; status = ''; muted = false; speaking = false; captions = true;
   heard = ''; answer = ''; elapsed = 0; startedAt = 0; cacheNotice = '';
+  tasks = new Map<string, VoiceTask>();
+  taskStatus = '';
+  get taskRows() { return [...this.tasks.values()].reverse().filter(task => task.state === 'running').slice(0, 3); }
+  get historyTaskRows() { return [...this.tasks.values()].reverse().filter(task => task.state !== 'running'); }
   voice: string = VOICE_OPTIONS[0].id;
   profileState: 'loading' | 'ready' | 'missing' | 'updating' | 'error' = 'loading';
   profileUpdatedAt: string | null = null;
@@ -27,6 +39,7 @@ export class VoiceCall extends Store {
   private response = '';
   private playbackGeneration?: number;
   private replyComplete = false;
+  private inputResumed = false;
   private history = new VoiceHistoryStore();
   constructor(private api?: VoiceAPI, private createAudio: (...args: ConstructorParameters<typeof CallAudio>) => CallAudio = (...args) => new CallAudio(...args)) {
     super();
@@ -53,7 +66,7 @@ export class VoiceCall extends Store {
     this.muted = false; this.speaking = false; this.connected = false; this.audioReady = false; this.ending = false;
     this.cacheNotice = ''; this.response = ''; this.records.clear(); this.requests = 0;
     this.playbackGeneration = undefined;
-    this.replyComplete = false;
+    this.replyComplete = false; this.inputResumed = false; this.tasks.clear(); this.taskStatus = '';
     this.profileUpdatedAt = null; this.profileMessage = ''; this.profileState = 'loading';
     const id = this.id = crypto.randomUUID();
     this.changed();
@@ -125,8 +138,10 @@ export class VoiceCall extends Store {
           if (this.ending) this.end();
           else if (this.replyComplete && this.phase === 'active') { this.status = '我在听，你可以继续说'; this.changed(); }
         },
-        () => { if (this.id === id) this.fail('麦克风已断开，请重新连接设备后再试。'); });
+        () => { if (this.id === id) this.fail('麦克风已断开，请重新连接设备后再试。'); },
+        event => { if (this.id === id) this.send({ ...event, generation: this.playbackGeneration }); });
       this.status = '正在启用麦克风…'; this.changed();
+      audio.setNearEndProtection(true);
       await audio.open();
       if (this.id !== id) { audio.close(); return; }
       this.audioReady = true; this.activate();
@@ -165,9 +180,69 @@ export class VoiceCall extends Store {
     void this.history.write(row).catch(() => { this.cacheNotice = '本机缓存暂不可用'; this.changed(); });
     return row.text;
   }
+  private task(id: string) {
+    if (!id) return;
+    let row = this.tasks.get(id);
+    if (!row) {
+      row = { id, title: '后台查询', state: 'running', delivery: '', cursor: 0, length: 0,
+        stage: '', summary: '', stageUpdated: 0, elapsed: 0, progress: '', body: '' };
+      this.tasks.set(id, row);
+
+    }
+    return row;
+  }
+  taskLabel(task: VoiceTask) {
+    if (task.state === 'completed') return '已完成';
+    if (task.state === 'interrupted') return '查询中断';
+    if (['failed', 'error'].includes(task.state)) return '查询失败';
+    if (['cancelled', 'canceled'].includes(task.state)) return '已停止';
+    return task.progress || task.summary || ({ queued: '正在排队', accepted: '已接收', thinking: '查询中',
+      tool: '正在获取信息', text: '正在整理回答', awaiting_reply: '正在等待回复' } as Record<string, string>)[task.stage] || '正在处理';
+  }
+  private updateTask(data: Record<string, unknown>) {
+    const input = data.task;
+    if (!input || typeof input !== 'object' || Array.isArray(input)) return;
+    const raw = input as Record<string, unknown>;
+    if (typeof raw.id !== 'string') return;
+    const row = this.task(raw.id); if (!row) return;
+    const state = typeof raw.state === 'string' ? raw.state : row.state;
+    // Delayed running updates cannot resurrect a completed/failed task.
+    if (terminalTask(row.state) && !terminalTask(state)) return;
+    if (typeof raw.title === 'string') row.title = raw.title.slice(0, 160);
+    row.state = state;
+    if (typeof raw.delivery === 'string') row.delivery = raw.delivery;
+    if (typeof raw.cursor === 'number' && Number.isFinite(raw.cursor)) row.cursor = Math.max(0, raw.cursor);
+    if (typeof raw.length === 'number' && Number.isFinite(raw.length)) row.length = Math.max(0, raw.length);
+    const updated = taskTime(raw.stage_updated);
+    if (updated > row.stageUpdated || !row.stage || terminalTask(state)) {
+      if (typeof raw.stage === 'string') row.stage = raw.stage;
+      if (typeof raw.summary === 'string') row.summary = raw.summary.slice(0, 240);
+      row.stageUpdated = updated;
+      // A fresh stored stage supersedes the older transient progress label.
+      if (typeof raw.stage === 'string' || typeof raw.summary === 'string') row.progress = '';
+    }
+    if (terminalTask(row.state)) row.progress = '';
+  }
+  private updateProgress(data: Record<string, unknown>) {
+    if (typeof data.call_id !== 'string') return;
+    const row = this.task(data.call_id); if (!row || terminalTask(row.state)) return;
+    const elapsed = typeof data.elapsed === 'number' && Number.isFinite(data.elapsed) ? Math.max(0, data.elapsed) : row.elapsed;
+    if (elapsed < row.elapsed) return;
+    const updated = taskTime(data.stage_updated);
+    if (updated && updated < row.stageUpdated) return;
+    row.elapsed = elapsed;
+    if (typeof data.stage === 'string') row.stage = data.stage;
+    if (typeof data.text === 'string') row.progress = data.text.slice(0, 240);
+    if (updated) row.stageUpdated = updated;
+  }
   private receive(data: VoiceEvent['data']) {
     const text = (field: string) => typeof data[field] === 'string' ? data[field] as string : '';
     try {
+      // Task metadata is independent of the audible generation and never clears playback.
+      if (data.type === 'task.updated' || data.type === 'agent.progress') {
+        if (data.type === 'task.updated') this.updateTask(data); else this.updateProgress(data);
+        this.changed(); return;
+      }
       if (typeof data.generation === 'number' && Number.isSafeInteger(data.generation)) {
         if (this.playbackGeneration !== undefined && data.generation < this.playbackGeneration) return;
         if (data.generation !== this.playbackGeneration) {
@@ -180,15 +255,19 @@ export class VoiceCall extends Store {
         case 'session.status': if (this.phase === 'connecting') this.status = '正在连接语音…'; break;
         case 'error': this.fail(text('message') || '语音连接异常。'); return;
         case 'call.closed': this.end(); return;
-        case 'playback.clear': this.audio?.clear(); this.status = '我在听'; break;
+        case 'playback.clear': this.inputResumed = false; this.audio?.clear(); this.status = '我在听'; break;
+        case 'speech.input.pending': this.inputResumed = false; this.audio?.pause(true); this.status = '我在听'; break;
+        case 'speech.input.resume': this.inputResumed = true; this.audio?.resume(); this.status = this.audio?.busy ? '继续刚才的回答' : '我在听，你可以继续说'; break;
+        case 'conversation.item.input_audio_transcription.failed': this.audio?.resume(); this.status = '我在听，你可以继续说'; break;
         case 'conversation.item.input_audio_transcription.started':
-          this.replyComplete = false; this.audio?.clear(); this.heard = ''; this.answer = ''; this.response = ''; this.status = '我在听'; break;
+          this.heard = ''; this.status = '我在听'; break;
         case 'conversation.item.input_audio_transcription.delta': this.heard = text('delta'); break;
         case 'conversation.item.input_audio_transcription.completed':
-          this.replyComplete = false;
+          if (!this.inputResumed) { this.replyComplete = false; this.answer = ''; this.response = ''; }
           this.heard = text('text') || this.heard;
           this.remember(`${this.id}:u:${text('item_id') || crypto.randomUUID()}`, 'user', this.heard);
-          this.status = '正在回应你'; break;
+          if (!this.inputResumed) this.status = '正在回应你';
+          this.inputResumed = false; break;
         case 'response.output_text.delta': {
           this.replyComplete = false;
           const response = text('response_id') || this.response || crypto.randomUUID();
@@ -198,11 +277,12 @@ export class VoiceCall extends Store {
         }
         case 'response.output_audio.delta': case 'agent.audio.delta': case 'opening.audio': this.audio?.play(text('delta')); break;
         case 'task.segment.end': this.replyComplete = true; this.audio?.segment(text('token')); break;
-        case 'agent.opening': case 'agent.status': this.status = text('text'); break;
+        case 'agent.opening': case 'agent.status': this.taskStatus = text('text'); break;
         case 'agent.text.delta': {
           const answer = this.remember(`agent:${text('call_id')}`, 'assistant', text('delta'), true,
             typeof data.offset === 'number' ? data.offset : undefined);
-          if (answer) this.answer = answer; break;
+          const task = this.task(text('call_id')); if (task && answer) task.body = answer;
+          if (answer && !this.heard && !this.response && !this.speaking) this.answer = answer; break;
         }
         case 'agent.answer': this.answer = text('text'); this.remember(`${this.id}:agent:${crypto.randomUUID()}`, 'assistant', this.answer); break;
         case 'response.done': this.replyComplete = true; if (!this.audio?.busy) this.status = '我在听，你可以继续说'; break;
@@ -221,9 +301,10 @@ export class VoiceCall extends Store {
     if (this.profileWorking) { this.profileState = 'error'; this.profileMessage = '可重新读取助手资料状态。'; }
     clearTimeout(this.deadline); clearInterval(this.timer); this.stopEvents?.(); this.stopEvents = undefined;
     this.audio?.close(); this.audio = undefined; this.speaking = false;
+    this.tasks.clear(); this.taskStatus = '';
     if (id) void this.api?.stop(id).catch(() => {});
   }
-  end(message = '通话已结束') { this.release(); this.phase = 'ended'; this.status = message; this.changed(); }
+  end(message = '通话已结束') { this.release(); this.open = false; this.phase = 'ended'; this.status = message; this.changed(); }
   fail(message: string) { this.release(); this.phase = 'error'; this.status = message; this.changed(); }
   dismiss() { this.end(); this.open = false; this.changed(); }
   dispose() { this.release(); }

@@ -15,7 +15,7 @@ try {
   await page.locator('#start-voice-call').waitFor({ timeout: 15000 });
   await page.screenshot({ path: 'test-results/voice/entry.png' });
   await page.locator('#start-voice-call').click();
-  await page.locator('#voice-call[open]').waitFor();
+  await page.locator('#voice-call').waitFor();
   await page.getByRole('button', { name: '对齐并开始通话', exact: true }).waitFor();
   assert.equal(await application.evaluate(() => globalThis.voiceMetrics.starts), 0);
   await page.screenshot({ path: 'test-results/voice/first-alignment.png' });

@@ -46,7 +46,7 @@ async def main():
     assert store.get('a',key)['state']=='running' and not manager.jobs[key].done()
     second=connection()
     # Global dedup survives the old connection being closed.
-    reused,yes=manager.submit('a','task-overview',True,'重复查询',bridge,{'scene':'new'})
+    reused,yes=manager.submit('a','call:one',False,'重复查询',bridge,{'scene':'new'})
     assert yes and reused==key and len(calls)==1
     second.reports.start(key)
     gate.set()
@@ -57,7 +57,34 @@ async def main():
     assert audio.count('先收到的完整句子。')==1,audio
     assert audio.count('后来返回的完整结果。')==1,audio
     assert store.list('other')==[]
-    await second.close();await manager.shutdown()
+    await second.close()
+    # Exercise the actual ToolCalls watcher with a stream that has no more body
+    # after its two acknowledged preview clauses, only a delayed completion.
+    completed_gate=asyncio.Event()
+    preview_text='最后结果第一句。最后结果第二句。'
+    class LateCompletionBridge:
+        async def stream(self,message,context,stop,emit,stage):
+            emit(preview_text)
+            await completed_gate.wait()
+            assert not stop.is_set()
+    last,_=manager.submit('a','late-completion',True,'晚到完成事件',LateCompletionBridge(),{'scene':'late'})
+    third=connection()
+    try:
+        await until(lambda:store.get('a',last)['delivery']=='awaiting_choice')
+        row=store.get('a',last)
+        assert row['state']=='running' and row['cursor']==len(preview_text),row
+        audio_before=[e for e in events if e['type']=='agent.audio.delta' and e.get('call_id')==last]
+        assert [e['delta'] for e in audio_before if e['delta'] in ('最后结果第一句。','最后结果第二句。')]==['最后结果第一句。','最后结果第二句。']
+        completed_gate.set()
+        await until(lambda:store.get('a',last)['delivery']=='reported')
+        row=store.get('a',last)
+        assert row['state']=='completed' and row['cursor']==len(preview_text),row
+        audio_after=[e for e in events if e['type']=='agent.audio.delta' and e.get('call_id')==last]
+        assert audio_after==audio_before,'Late completion must update status without speaking again'
+        assert any(e['type']=='task.updated' and e['task']['id']==last and e['task']['delivery']=='reported' for e in events)
+    finally:
+        completed_gate.set();await third.close();await manager.shutdown()
     print('PASS: stream speech before completion, disconnect keeps request, reconnect same task, cross-call dedup, acknowledged cursor, no whole-report replay')
+    print('PASS: actual watcher reconciles fully heard preview after delayed stream completion without new audio')
 
 asyncio.run(main())

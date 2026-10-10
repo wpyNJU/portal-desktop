@@ -10,7 +10,14 @@ export interface VoiceStart {
   callId: string; endpoint: string; sceneId: string; voice: string; history: VoiceHistory[];
 }
 export interface VoiceEvent { callId: string; data: { type: string; [key: string]: unknown } }
+export const VOICE_AUDIO_DIAGNOSTIC_STATES = ['scheduled', 'drained', 'paused-confirmed',
+  'paused-local', 'cleared', 'resumed'] as const;
+export interface VoiceAudioDiagnostic {
+  type: 'client.diagnostic'; reason: 'voice_audio_state'; state: typeof VOICE_AUDIO_DIAGNOSTIC_STATES[number];
+  generation?: number; context_state: string; paused_ms: number; queued_ms: number; frames: number;
+}
 export type VoiceCommand =
+  | VoiceAudioDiagnostic
   | { type: 'input_audio_buffer.append'; audio: string }
   | { type: 'input_audio_mute.commit' | 'input_audio_unmute.commit' | 'response.cancel' }
   | { type: 'client.playback'; playing: boolean; generation?: number }

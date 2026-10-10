@@ -1,14 +1,14 @@
-import { Dialog } from '../shared/components/dialog';
 import { useModel } from '../shared/hooks/use-model';
 import type { VoiceCall } from './models/call';
 import { PhoneIcon, MicIcon } from './components/icons';
 import { VOICE_OPTIONS } from '../../shared/voice';
 
-export function VoiceCallDialog({ model, onRetry }: { model: VoiceCall; onRetry: () => void }) {
+export function VoiceCallPanel({ model, onRetry }: { model: VoiceCall; onRetry: () => void }) {
   const call = useModel(model);
   const clock = `${String(Math.floor(call.elapsed / 60)).padStart(2, '0')}:${String(call.elapsed % 60).padStart(2, '0')}`;
-  return <Dialog id="voice-call" className="voice-call" open={call.open} onClose={() => call.dismiss()}
-    aria-labelledby="voice-call-name" aria-describedby="voice-call-status">
+  if (!call.open) return null;
+  return <aside id="voice-call" className="voice-call"
+    aria-label="语音通话" aria-describedby="voice-call-status">
     <div className="voice-call-heading"><span><span className="voice-call-dot" />语音通话</span>
       <button type="button" className="close" aria-label="关闭并结束通话" title="关闭并结束通话" onClick={() => call.dismiss()} />
     </div>
@@ -27,6 +27,9 @@ export function VoiceCallDialog({ model, onRetry }: { model: VoiceCall; onRetry:
       {call.heard && <p className="voice-call-heard"><span>你</span>{call.heard}</p>}
       {call.answer ? <p>{call.answer}</p> : <p className="voice-call-caption-empty">{call.phase === 'connecting' ? '接通后，直接开口就好' : call.phase === 'active' ? '听见彼此，也留一点安静' : '下次见，随时再聊'}</p>}
     </section>
+    {call.taskRows.length > 0 && <section className="voice-call-tasks" aria-label="后台任务">
+      {call.taskRows.map(task => <p key={task.id}><strong>{task.title}</strong><span>{call.taskLabel(task).slice(0, 48)}</span></p>)}
+    </section>}
     <div className="voice-call-controls">
       <div><button type="button" className={`voice-call-control${call.muted ? ' selected' : ''}`} aria-label={call.muted ? '取消静音' : '静音麦克风'}
         aria-pressed={call.muted} disabled={call.phase !== 'active'} onClick={() => call.toggleMute()}><MicIcon muted={call.muted} /></button><span>麦克风</span></div>
@@ -50,5 +53,5 @@ export function VoiceCallDialog({ model, onRetry }: { model: VoiceCall; onRetry:
     <div className="voice-call-footer"><label>{call.busy && !call.onboarding ? '下次通话音色' : '音色'} <select aria-label="通话音色" value={call.voice}
       onChange={event => call.preferences(event.target.value)}>{VOICE_OPTIONS.map(voice => <option key={voice.id} value={voice.id}>{voice.label}</option>)}</select></label>
       <span>{call.cacheNotice || (call.busy ? '随时说，随时停' : '语音记录保存在这台设备')}</span></div>
-  </Dialog>;
+  </aside>;
 }

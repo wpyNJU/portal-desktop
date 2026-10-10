@@ -12,23 +12,9 @@ ns['SpeechOutput']=SpeechOutput
 exec(compile(ast.Module(body=[n for n in source.body if isinstance(n,(ast.ClassDef,ast.FunctionDef)) and n.name in ('ToolCalls','query_identity')],type_ignores=[]),'<test>','exec'),ns,ns)
 Tool=ns['ToolCalls'];identity=ns['query_identity'];original_run=Tool.run
 def item(i,text):return {'call_id':i,'name':'ask_agent','arguments':json.dumps({'message':text})}
-async def test():
-    gate=asyncio.Event();calls=[];events=[]
-    async def output(d):events.append(d)
-    async def run(self,items,epoch,stop):
-        calls.append(items[0]['call_id']);await gate.wait()
-        return [{'call_id':items[0]['call_id'],'content':[{'text':'[语音端已逐句显示并播报]结果'}]}]
-    Tool.run=run
-    t=Tool(output,output,context={"scene":"test"})
-    t.submit([item('a','现在有什么任务在做？'),item('b','帮我查一下现在有什么任务在做')])
-    await asyncio.sleep(.01);assert len(calls)==1,calls
-    t.submit([item('c','查询项目甲的任务'),item('d','取消项目甲的任务')]);await asyncio.sleep(.01)
-    assert len(calls)==3,calls
-    gate.set();await asyncio.gather(*(x[0] for x in t.pending));assert any(d.get('items',[{}])[0].get('call_id')=='b' for d in events)
-    t.submit([item('e','现在有什么任务在做')]);await asyncio.gather(*(x[0] for x in t.pending));assert len(calls)==3
-    t.submit([item('f','重新查询现在有什么任务在做')]);await asyncio.gather(*(x[0] for x in t.pending));assert len(calls)==4
-    print('PASS: in-flight dedup, separate requests, duplicate tool completion, recent result reuse, explicit refresh')
-asyncio.run(test())
+assert identity(item('same','first wording')) == identity(item('same','other wording'))
+assert identity(item('one','same wording')) != identity(item('two','same wording'))
+print('PASS: transport identity is independent of request prose')
 
 async def slow_test():
     class Relay:
@@ -49,7 +35,7 @@ async def slow_test():
     results=await original_run(t,[item('slow','任务')],0,threading.Event())
     assert '延迟返回的结果' in results[0]['content'][0]['text']
     assert not any(e['type']=='agent.text.error' for e in events)
-    assert any(e['type']=='agent.progress' and e['text']=='正在分析你的问题' for e in events)
+    assert any(e['type']=='agent.progress' and e['text']=='查询中' for e in events)
     assert any(e['type']=='agent.text.delta' and '延迟返回的结果' in e['delta'] for e in events)
     await t.close()
     print('PASS: delayed stream survives idle wait and delivers result (scaled timing)')

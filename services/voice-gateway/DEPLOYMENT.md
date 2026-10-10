@@ -111,3 +111,12 @@ npx vitest run tests/voice-playback.test.ts tests/voice-mobile.test.ts tests/voi
 手机后台、锁屏、回声环境和供应商延迟仍需真机测试。当前网页在隐藏时结束通话，不承诺后台常驻。应用内已有“测试录音”入口，但交付包不包含现场录音；需要时自行放置获授权的 `mobile/self-test.wav`，或直接使用麦克风验证。
 
 完整行为与状态说明见 [FLOW.md](FLOW.md)。
+
+
+### 排查“有进度但没声音”
+
+网关的 `logs/doubao.err.log` 增加不含正文/PCM的链路事件：`progress_queued`、`progress_synthesis`、`progress_forwarded`、`progress_finished`、`task_tool_result`、`task_natural_audio`、`task_natural_fallback`。按任务编号关联；`progress_forwarded` 只代表成功发送，不能当成用户已听到。
+
+连接编号关联 `voice_transition`、`audio_forwarded`、`client_playback` 与 `client_audio`。Mac 的 `client_audio` 记录 scheduled、drained、paused-confirmed、paused-local、cleared、resumed，以及音频上下文状态、暂停/排队毫秒数、帧数和 generation。scheduled 表示进入音频节点，drained 表示队列耗尽，都不证明扬声器音量或用户实际听见。诊断不采集录音、转写、结果正文或凭据。
+
+先判断是否根本没有收到后台正文，再区分调度等待、合成失败、发出后被暂停/清除、AudioContext 挂起。对照 generation 排除旧队列回执；无需用户贴出完整私密任务内容。

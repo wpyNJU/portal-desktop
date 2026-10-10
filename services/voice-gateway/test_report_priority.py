@@ -83,7 +83,10 @@ class PriorityTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_old_resume_question_waits_for_current_reply_and_new_task(self):
         old=self.task('旧项目',100,'旧的第一句。旧的第二句。');new=self.task('新项目',200,'新的结果。')
-        self.hold='旧的第一句。';self.reports.start(old,requested=False)
+        # Explicit full reports still ask once about resuming after interruption.
+        # Automatic excerpts are covered separately and never prompt again.
+        self.hold='旧的第一句。'
+        with patch('task_store.time.time',return_value=100):self.reports.start(old,requested=True)
         await asyncio.wait_for(self.reached.wait(),1)
         self.scheduler.update(user=True,playing=False);self.scheduler.interrupt()
         self.reports.start(new,requested=False);await asyncio.sleep(.03)

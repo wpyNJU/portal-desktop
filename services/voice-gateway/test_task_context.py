@@ -90,6 +90,35 @@ class ContextTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(.05)
         self.assertEqual(self.sent, [])
 
+    async def test_old_active_survives_recent_completed_history_and_body_is_bounded(self):
+        old = self.store.create('s', '仍在跑的早期任务')
+        for _ in range(30):self.task('reported')
+        self.start()
+        snapshot = self.sync.instructions()
+        self.assertIn(old, snapshot)
+        self.assertIn('active_count', snapshot)
+        self.assertLess(len(snapshot), 6500)
+
+    async def test_stage_changes_coalesce_and_terminal_excerpt_is_refreshed(self):
+        key = self.store.create('s', '研究甲项目')
+        self.start()
+        for stage in ('accepted', 'thinking', 'tool'):
+            self.store.update('s', key, stage=stage)
+            self.event(key)
+        self.store.update('s', key, delivery='reporting')
+        self.event(key)
+        self.allowed = True
+        await asyncio.wait_for(self.delivered.wait(), .5)
+        self.assertEqual(len(self.sent), 1)
+        self.assertIn('tool', self.sent[-1])
+        self.delivered.clear()
+        self.store.update('s', key, state='completed', text='确认尚未上线。' * 1000, summary='原文摘录：确认尚未上线。')
+        self.event(key)
+        await asyncio.wait_for(self.delivered.wait(), .5)
+        self.assertIn('确认尚未上线', self.sent[-1])
+        self.assertLess(len(self.sent[-1]), 6500)
+        self.assertEqual(len(self.store.get('s', key)['text']), 7000)
+
 
 if __name__ == '__main__':
     unittest.main()

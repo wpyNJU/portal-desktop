@@ -107,10 +107,14 @@ class StartupTests(unittest.IsolatedAsyncioTestCase):
             timing = [line for line in logs.output if 'first_reply ' in line]
             self.assertEqual(len(timing), 1)
             self.assertIn('context_updates=0', timing[0])
-            self.assertEqual(provider.first_audio_updates, 0)
+            self.assertEqual(provider.first_audio_updates, 1)
             self.assertEqual(sum(e['type'] == 'session.create' for e in provider.sent), 1)
-            self.assertFalse(any(e['type'] == 'session.update' for e in provider.sent))
-            self.assertEqual(sum(e['type'] == 'task.updated' for e in phone.received), 44)
+            updates=[e for e in provider.sent if e['type']=='session.update']
+            self.assertEqual(len(updates),1)
+            self.assertEqual(updates[0]['session'],{'tools':gateway.create_session()['session']['tools']})
+            self.assertEqual([e['type'] for e in provider.sent[:3]],['session.create','session.update','input_audio_buffer.append'])
+            self.assertEqual(sum(e['type'] == 'task.updated' for e in phone.received), 0)
+            self.assertFalse(any(e['type'] in ('agent.text.delta','agent.text.error','agent.text.done') for e in phone.received))
             self.assertTrue(any(e['type'] == 'response.output_audio.delta' for e in phone.received))
             self.assertEqual([tuple(r) for r in store.db.execute('SELECT id,text,cursor FROM tasks')], [tuple(r) for r in before])
         finally:

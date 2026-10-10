@@ -42,10 +42,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest]
+        os: [macos-14, macos-15-intel, windows-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     env:
+      # Explicit distribution mode; never reuse the local-test bypass on tags.
+      PORTAL_DESKTOP_MAC_ADHOC_RELEASE: '1'
       PORTAL_DESKTOP_UPDATE_REPOSITORY: ${{ vars.PORTAL_DESKTOP_UPDATE_REPOSITORY || github.repository }}
     steps:
       - uses: actions/checkout@v4
@@ -58,7 +60,7 @@ jobs:
           cache: npm
       - uses: dtolnay/rust-toolchain@stable
       - name: Import Apple Developer ID certificate (same secrets as Heart Portal)
-        if: runner.os == 'macOS'
+        if: runner.os == 'macOS' && env.PORTAL_DESKTOP_MAC_ADHOC_RELEASE != '1'
         env:
           APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -97,10 +99,19 @@ jobs:
         run: npx vitest run tests/runtime-update-native.test.ts
       - run: npm run make
       - name: Verify signed macOS DMG installation and Release ZIP upgrade preflight
-        if: runner.os == 'macOS'
+        if: runner.os == 'macOS' && env.PORTAL_DESKTOP_MAC_ADHOC_RELEASE != '1'
         run: npm run test:macos-package
+      - name: Verify ad-hoc macOS package integrity
+        if: runner.os == 'macOS' && env.PORTAL_DESKTOP_MAC_ADHOC_RELEASE == '1'
+        run: |
+          set -euo pipefail
+          APP="$(find out -maxdepth 3 -name 'Portal Desktop.app' -print -quit)"
+          test -n "$APP"
+          codesign --verify --deep --strict "$APP"
+          codesign --verify --strict "$APP/Contents/Resources/heart-portal"
+          find out/make -name '*.dmg' -exec hdiutil verify {} \;
       - name: Clean up Apple signing material
-        if: runner.os == 'macOS' && always()
+        if: runner.os == 'macOS' && env.PORTAL_DESKTOP_MAC_ADHOC_RELEASE != '1' && always()
         run: |
           security delete-keychain "$RUNNER_TEMP/portal-signing.keychain-db" || true
           rm -f "$RUNNER_TEMP/certificate.p12" "$RUNNER_TEMP/DeveloperIDG2CA.cer"
@@ -140,9 +151,9 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
-      - name: Validate the Windows package and stage checksums
-        run: node scripts/stage-release.mjs artifacts release "$(node -p 'require("./package.json").version')" windows-x64
-      - name: Create the draft release with Windows assets
+      - name: Validate all three platform packages and stage checksums
+        run: node scripts/stage-release.mjs artifacts release "$(node -p 'require("./package.json").version')"
+      - name: Publish the complete Windows and macOS release
         if: startsWith(github.ref, 'refs/tags/')
         env:
           GH_TOKEN: ${{ github.token }}
@@ -150,5 +161,6 @@ jobs:
         run: |
           gh release create "$GITHUB_REF_NAME" --verify-tag --draft --title "Portal Desktop $GITHUB_REF_NAME" --notes-file desktop/RELEASE_NOTES.md
           gh release upload "$GITHUB_REF_NAME" release/*
-# Only a matching version tag builds. This fork has no Developer ID secrets, so CI
-# builds Windows only and leaves a draft; macOS packages are attached before publishing.
+          gh release edit "$GITHUB_REF_NAME" --draft=false --latest
+# Only a matching new version tag builds. Publication waits for all three native
+# builds and package checks; incomplete releases stay drafts if upload fails.

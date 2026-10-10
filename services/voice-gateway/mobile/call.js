@@ -124,14 +124,58 @@ function controls(){
 }
 
 function send(data){if(ws?.readyState===1)ws.send(JSON.stringify(data));}
-let reportSegments=[],playbackGeneration,playbackEpoch=0;
+// Energy-only near-end hint, not semantic VAD. Remote ASR remains authoritative.
+let nearEndEnabled=false,nearEndNoise=.008,nearEndRun=0,nearEndQuiet=0,nearEndLatched=false,nearEndTimer=null;
+let localPause=null;
+function cancelNearEndTimer(){if(nearEndTimer!==null){clearTimeout(nearEndTimer);nearEndTimer=null;}}
+function resetNearEnd(){cancelNearEndTimer();nearEndRun=0;nearEndQuiet=0;nearEndLatched=false;}
+function pauseLocalPlayback(force=false){
+ if(localPause||(!force&&!nodes.size))return;
+ const at=ctx.currentTime,frames=[];
+ acknowledgeSegment();playbackEpoch++;
+ for(const n of nodes){
+  const start=n.voiceStart,offset=n.voiceOffset+Math.max(0,at-start);
+  if(offset<n.buffer.duration)frames.push({buffer:n.buffer,offset,start:Math.max(at,start)});
+  n.onended=null;try{n.stop();}catch{}n.disconnect();
+ }
+ nodes.clear();localPause={at,frames,added:0,confirmed:false};playback(false);
+}
+function resumeLocalPlayback(){
+ cancelNearEndTimer();if(!localPause)return;
+ const paused=localPause;localPause=null;
+ const shift=ctx.currentTime+.06-paused.at;
+ for(const segment of reportSegments)segment.end+=shift;
+ nextTime+=shift;
+ for(const frame of paused.frames)schedulePlayback(frame.buffer,frame.start+shift,frame.offset);
+ if(!nodes.size)listen();
+}
+function pauseNearEnd(confirmed=false){
+ pauseLocalPlayback(confirmed);cancelNearEndTimer();
+ if(localPause&&confirmed)localPause.confirmed=true;
+ if(localPause&&!localPause.confirmed)nearEndTimer=setTimeout(()=>{nearEndTimer=null;resumeLocalPlayback();},1200);
+}
+function resumeNearEnd(){resumeLocalPlayback();nearEndRun=0;nearEndQuiet=0;}
+function observeNearEnd(buffer){
+ if(!nearEndEnabled||activeProvider!=='doubao'||muted||!active||localPause?.confirmed)return;
+ const pcm=new Int16Array(buffer);if(!pcm.length)return;
+ let energy=0;for(const sample of pcm)energy+=(sample/32768)**2;
+ const rms=Math.sqrt(energy/pcm.length),duration=Math.min(pcm.length/16000,.04);
+ if(!nodes.size&&!localPause){resetNearEnd();nearEndNoise=.98*nearEndNoise+.02*Math.min(rms,.03);return;}
+ const loud=rms>Math.max(.045,nearEndNoise*5);
+ if(!loud){nearEndRun=0;nearEndQuiet+=duration;if(nearEndQuiet>=.4){resumeLocalPlayback();nearEndLatched=false;}return;}
+ nearEndQuiet=0;nearEndRun+=duration;
+ if(nearEndRun>=.3&&!nearEndLatched){
+  nearEndLatched=true;pauseNearEnd();
+ }
+}
+let reportSegments=[],playbackGeneration,playbackEpoch=0,liveBuffer=.22,liveHasAudio=false;
 function playback(playing){send({type:'client.playback',playing,generation:playbackGeneration});}
 function acknowledgeSegment(){
- const now=ctx?.currentTime||0,complete=reportSegments.filter(s=>s.end<=now);
+ const now=localPause?.at??(ctx?.currentTime||0),complete=reportSegments.filter(s=>s.end<=now);
  reportSegments=reportSegments.filter(s=>s.end>now);
  for(const s of complete)send({type:'task.segment.played',token:s.token});
 }
-function clearAudio(){acknowledgeSegment();reportSegments=[];playbackEpoch++;for(const n of nodes){n.onended=null;try{n.stop();}catch{}n.disconnect();}nodes.clear();playback(false);nextTime=ctx?.currentTime||0;document.body.classList.remove('talking');}
+function clearAudio(){resetNearEnd();acknowledgeSegment();localPause=null;reportSegments=[];playbackEpoch++;liveBuffer=.22;liveHasAudio=false;for(const n of nodes){n.onended=null;try{n.stop();}catch{}n.disconnect();}nodes.clear();playback(false);nextTime=ctx?.currentTime||0;document.body.classList.remove('talking');}
 function listen(){if(active)status(muted?'麦克风已关闭':'我在听，你可以继续说',muted?'已静音':'正在聆听');}
 function play(data){
  if(!ctx||!active)return;
@@ -141,11 +185,37 @@ function play(data){
  if(!pcm.length)return;
  if(!firstAudio){firstAudio=true;if(firstAt)$('metrics').textContent=`首段语音 ${((performance.now()-firstAt)/1000).toFixed(1)} 秒 · ${isPCM16?'GPT-Live':'豆包'}` ;}
  const b=ctx.createBuffer(1,pcm.length,rate),a=b.getChannelData(0);for(let i=0;i<a.length;i++)a[i]=Number.isFinite(pcm[i])?Math.max(-1,Math.min(1,isPCM16?pcm[i]/32768:pcm[i])):0;
- const n=ctx.createBufferSource();n.buffer=b;n.connect(ctx.destination);const wasPlaying=nodes.size>0,epoch=playbackEpoch;nodes.add(n);if(!wasPlaying)playback(true);
- nextTime=Math.max(nextTime,ctx.currentTime+.06);n.start(nextTime);nextTime+=b.duration;
+ if(isPCM16){
+  // Buffer at a speech boundary, not before every packet: resetting the lead
+  // on each arrival creates gaps even while previous audio is still queued.
+  if(nextTime<=ctx.currentTime+.005){
+   const shortUnderrun=liveHasAudio&&nextTime>0&&ctx.currentTime-nextTime<.3;
+   if(shortUnderrun)liveBuffer=Math.min(.46,liveBuffer+.08);else liveBuffer=.22;
+   nextTime=ctx.currentTime+liveBuffer;
+  }
+  liveHasAudio=true;
+ }else nextTime=Math.max(nextTime,(localPause?.at??ctx.currentTime)+.06);
+ const start=nextTime;nextTime+=b.duration;
+ if(localPause&&!isPCM16){
+  localPause.frames.push({buffer:b,offset:0,start});localPause.added+=b.duration;
+  // Bound additional paused backlog; resume without discarding supplier audio.
+  if(localPause.confirmed){
+   // Never resume over confirmed speech. End a stalled connection instead of
+   // accumulating audio indefinitely or silently advancing report receipts.
+   if(localPause.added>=30||localPause.frames.length>=2048)
+    hangup().then(()=>status('输入确认超时，请重新开始通话','通话已结束'));
+  }else if(localPause.added>=8||localPause.frames.length>=128)resumeLocalPlayback();
+ }else schedulePlayback(b,start,0);
+}
+function schedulePlayback(buffer,start,offset){
+ const n=ctx.createBufferSource();n.buffer=buffer;n.voiceStart=start;n.voiceOffset=offset;
+ n.connect(ctx.destination);const wasPlaying=nodes.size>0,epoch=playbackEpoch;nodes.add(n);
+ if(!wasPlaying)playback(true);
+ n.start(start,offset);
  n.onended=()=>{n.disconnect();nodes.delete(n);if(epoch!==playbackEpoch)return;acknowledgeSegment();if(!nodes.size){playback(false);document.body.classList.remove('talking');if(endAfterPlayback)finishFarewell();else listen();}};
  document.body.classList.add('talking');status('你可以直接插话','正在说话');
 }
+
 function event(d){
  if(Number.isSafeInteger(d.generation)){
   if(playbackGeneration!==undefined&&d.generation<playbackGeneration)return;
@@ -174,9 +244,12 @@ function event(d){
  if(type==='call.ending'){clearAudio();muted=true;capture?.port.postMessage(false);$('answer').textContent=d.text;status('说完再见后结束通话','正在告别');return;}
  if(type==='call.end'){if(d.reason==='idle_timeout'){hangup().then(()=>status('空闲超过 30 秒，点击可继续聊','通话已自动结束'));return;}endAfterPlayback=true;finishFarewell();return;}
  if(type==='session.status'){status(d.message,'连接中');return;}
+ if(type==='speech.input.pending'&&activeProvider==='doubao'){pauseNearEnd(true);return;}
+ if(type==='speech.input.resume'&&activeProvider==='doubao'){resumeNearEnd();return;}
+ if(type==='conversation.item.input_audio_transcription.failed'&&activeProvider==='doubao')resumeNearEnd();
  if(type==='playback.clear'){clearAudio();$('ack').textContent='';return;}
  if(type==='conversation.item.input_audio_transcription.started'){
-  clearAudio();
+  if(activeProvider!=='doubao')clearAudio();
   questionId=d.item_id;responseId='';firstAt=0;firstAudio=false;$('heard').textContent='';$('answer').textContent='';$('ack').textContent='';status('你说，我在听','正在聆听');
  }
  if(type==='conversation.item.input_audio_transcription.delta')$('heard').textContent=d.delta||'';
@@ -212,6 +285,7 @@ async function startCall(test=false,profileAccepted=false){
  try{
   await step(historyReady,5000,'读取本机对话缓存超时，请重试');check();historyCall=crypto.randomUUID();historyUser='';historyAssistant='';
   ctx=new(window.AudioContext||window.webkitAudioContext)({sampleRate:16000});
+  resetNearEnd();nearEndEnabled=false;nearEndNoise=.008;localPause=null;
   const audioContext=ctx;
   $('audio-unlock').onclick=()=>{audioContext.resume().catch(()=>{});};
   const unlockTimer=setTimeout(()=>{if(generation===callGeneration&&audioContext.state!=='running'){$('audio-unlock').classList.remove('hidden');status('手机需要一次点击来启用声音','点击下方启用声音');}},900);
@@ -222,7 +296,8 @@ async function startCall(test=false,profileAccepted=false){
   if(test){const recording=await fetch('/call-assets/self-test.wav');if(!recording.ok)throw new Error('未配置测试录音，请直接使用麦克风通话');const b=await ctx.decodeAudioData(await recording.arrayBuffer());source=ctx.createBufferSource();source.buffer=b;}
   else{status('请允许使用麦克风','准备通话');const request=navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true,channelCount:1},video:false});
    request.then(stream=>{if(generation!==callGeneration)stream.getTracks().forEach(t=>t.stop());},()=>{});
-   mic=await step(request,25000,'麦克风授权未完成，请允许麦克风后重试');check();source=ctx.createMediaStreamSource(mic);}
+   mic=await step(request,25000,'麦克风授权未完成，请允许麦克风后重试');check();source=ctx.createMediaStreamSource(mic);
+   nearEndEnabled=activeProvider==='doubao'&&mic.getAudioTracks()[0]?.getSettings().echoCancellation===true;}
   status('正在连接语音服务','连接中');
   await step(new Promise((resolve,reject)=>{
    const s=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/pipeline/ws');ws=s;
@@ -235,6 +310,7 @@ async function startCall(test=false,profileAccepted=false){
   active=true;starting=false;muted=false;firstAudio=false;firstAt=0;responseId='';questionId='';congestedSince=null;networkWarning=false;$('agent-results').textContent='';$('heard').textContent='—';$('answer').textContent='';$('ack').textContent='';$('mute').textContent='麦克风开';
   capture.port.onmessage=e=>{
    if(!active||muted)return;
+   observeNearEnd(e.data);
    if(ws?.readyState!==1)return;
    const pressure=networkPressure(ws.bufferedAmount,performance.now());
    if(pressure==='failed'){
@@ -257,16 +333,16 @@ async function hangup(){
  ++callGeneration;if(cancelStartup){cancelStartup();cancelStartup=null;}$('audio-unlock').classList.add('hidden');
  closing=true;active=false;endAfterPlayback=false;clearInterval(timer);clearAudio();capture?.port.postMessage(false);
  try{source?.disconnect();capture?.disconnect();sink?.disconnect();}catch{}
- mic?.getTracks().forEach(t=>t.stop());mic=null;
+ mic?.getTracks().forEach(t=>t.stop());mic=null;nearEndEnabled=false;
  const old=ws;ws=null;if(old?.readyState===1){old.send(JSON.stringify({type:'session.close'}));setTimeout(()=>old.close(),activeProvider==='gptlive'?10000:1200);}else old?.close();
  if(ctx&&ctx.state!=='closed')await deadline(ctx.close(),1500,'关闭音频超时').catch(()=>{});ctx=null;source=null;capture=null;starting=false;
  stopping=false;document.body.classList.remove('active');$('clock').textContent='未通话';$('ack').textContent='';controls();status('点击可以再次开始','通话已结束');
 }
 $('test').onclick=()=>{$('settings').close();startCall(true);};$('hangup').onclick=hangup;
 $('interrupt').onclick=()=>{clearAudio();send({type:'response.cancel'});listen();};
-$('mute').onclick=()=>{muted=!muted;capture?.port.postMessage(!muted);send({type:muted?'input_audio_mute.commit':'input_audio_unmute.commit'});$('mute').textContent=muted?'麦克风关':'麦克风开';listen();};
+$('mute').onclick=()=>{if(!localPause?.confirmed)resumeLocalPlayback();resetNearEnd();muted=!muted;capture?.port.postMessage(!muted);send({type:muted?'input_audio_mute.commit':'input_audio_unmute.commit'});$('mute').textContent=muted?'麦克风关':'麦克风开';listen();};
 document.addEventListener('visibilitychange',()=>{if(document.hidden&&active)hangup();});
-window.addEventListener('pagehide',()=>{mic?.getTracks().forEach(t=>t.stop());send({type:'session.close'});});
+window.addEventListener('pagehide',()=>{resetNearEnd();mic?.getTracks().forEach(t=>t.stop());send({type:'session.close'});});
 
 
 $('refresh-profile').onclick=()=>requestProfile(true);

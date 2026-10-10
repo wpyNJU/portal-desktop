@@ -56,7 +56,10 @@ class AgentBridge:
                 except (httpx.HTTPError,ValueError,TimeoutError):pass
                 report('request_start')
                 # Doubao resolves references in the tool message; saved call history stays in its session.
-                body={'message':text,'scene_id':scene,'session_id':context.get('session_id'),
+                # Ask for useful early text, without changing the user's scope or
+                # treating private reasoning/tool activity as a spoken finding.
+                voice_format='\n\n[语音呈现要求] 保持上述需求、否定和操作授权边界不变。先用两句简短口语给出已经核实的关键结论或可执行的第一步，再补充必要细节。若需要多个步骤，得到可用结果就分步输出，不必等全部步骤结束后才组织长篇回答；未核实的部分明确标注尚在等待。不要输出内部思考，不编造进度，不在结论前重复“我帮你查”。'
+                body={'message':text+voice_format,'scene_id':scene,'session_id':context.get('session_id'),
                       'scene_meta':{'client':'voice-call/1.0','scene_label':'语音通话'}}
                 async with client.stream('POST',self.url,json=body) as response:
                     if response.status_code==202:

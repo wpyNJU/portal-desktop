@@ -25,12 +25,13 @@ class TurnScheduler:
         entry=self.next_waiter()
         value=priority() if callable(priority) else priority
         return entry is not None and self.priority(entry)>value
-    async def wait_idle(self):
+    async def wait_idle(self,stop=None,*,ignore_generation=False):
         while not self.closed:
-            if self.idle():return True
+            if stop is not None and stop.is_set():return False
+            if self.idle() or (ignore_generation and not self.user and not self.playing and time.monotonic()-self.changed>=self.quiet):return True
             await asyncio.sleep(.05)
         return False
-    async def deliver(self,action,*,priority=(0,0),valid=None):
+    async def deliver(self,action,*,priority=(0,0),valid=None,foreground=False):
         self.sequence+=1
         entry={'priority':priority,'valid':valid,'sequence':self.sequence}
         self.waiting.append(entry)
@@ -39,7 +40,8 @@ class TurnScheduler:
             # so a queued older result cannot get ahead of a newer user question.
             while not self.closed:
                 if not self.eligible(entry):return False
-                if self.idle() and not self.lock.locked() and self.next_waiter() is entry:
+                ready=(not self.user and not self.playing) if foreground else self.idle()
+                if ready and not self.lock.locked() and self.next_waiter() is entry:
                     async with self.lock:
                         self.waiting.remove(entry)
                         stop=threading.Event();self.audio_stop=stop
@@ -47,7 +49,7 @@ class TurnScheduler:
                         try:
                             await self.current
                             # Synthesis completion is not playback completion.
-                            await self.wait_idle()
+                            await self.wait_idle(stop,ignore_generation=foreground)
                             return not stop.is_set()
                         except asyncio.CancelledError:
                             if not stop.is_set():raise

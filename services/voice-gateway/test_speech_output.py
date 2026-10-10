@@ -1,3 +1,4 @@
+from input_health import InputHealth
 import asyncio
 import ast
 import json
@@ -100,10 +101,10 @@ class SpeechTests(unittest.IsolatedAsyncioTestCase):
         async def remote():
             for event in incoming:yield json.dumps(event)
         async def client(event):self.events.append(event)
-        tools=SimpleNamespace(scheduler=self.scheduler,audio=self.output,interrupt=self.scheduler.interrupt,
+        tools=SimpleNamespace(acknowledge_request=lambda **kwargs:None,scheduler=self.scheduler,audio=self.output,interrupt=self.scheduler.interrupt,
                               submit=lambda items:None,response_ready=asyncio.Event())
         context={'history':[]}
-        namespace=dict(json=json,tools=tools,remote=remote(),usage=SimpleNamespace(observe=lambda event:None),
+        namespace=dict(input_health=InputHealth(),logger=SimpleNamespace(info=lambda *args:None),connection_id="test",json=json,tools=tools,remote=remote(),usage=SimpleNamespace(observe=lambda event:None),
                        send_client=client,context=context,normalize_history=normalize_history)
         exec(compile(ast.fix_missing_locations(ast.Module(body=[wrapper],type_ignores=[])),'<downstream>','exec'),namespace)
         await namespace['replay']()

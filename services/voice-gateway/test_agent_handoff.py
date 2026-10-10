@@ -53,7 +53,9 @@ class HandoffTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(requests),1)
         method,url,body=requests[0]
         self.assertEqual(method,'POST')
-        self.assertEqual(body['message'],question)
+        self.assertTrue(body['message'].startswith(question+'\n\n[语音呈现要求]'))
+        self.assertIn('否定和操作授权边界不变',body['message'])
+        self.assertIn('未核实的部分明确标注',body['message'])
         self.assertNotIn('history',body)
         self.assertNotIn('saved_conversation_json',json.dumps(body))
         self.assertNotIn('history-only-marker',json.dumps(body))

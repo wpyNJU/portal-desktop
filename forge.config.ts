@@ -13,7 +13,9 @@ import pkg from './package.json';
 
 const binary = path.resolve('resources', process.platform === 'win32' ? 'heart-portal.exe' : 'heart-portal');
 const macLocalTest = process.env.PORTAL_DESKTOP_MAC_LOCAL_TEST === '1';
-const macIdentity = macLocalTest ? '-' : signing.identity;
+const macAdhocRelease = process.env.PORTAL_DESKTOP_MAC_ADHOC_RELEASE === '1';
+const macAdhoc = macLocalTest || macAdhocRelease;
+const macIdentity = macAdhoc ? '-' : signing.identity;
 if (process.platform === 'darwin' && macLocalTest && process.env.GITHUB_REF?.startsWith('refs/tags/')) {
   throw new Error('Local-test macOS signatures cannot be published as a release.');
 }
@@ -26,7 +28,11 @@ const macSignOptions: OsxSignOptions & { continueOnError: false } = {
   preAutoEntitlements: macIdentity !== '-',
   preEmbedProvisioningProfile: false,
   ignore: ignoreMacSigningFile,
-  optionsForFile: () => macIdentity === '-' ? { timestamp: 'none' } : {},
+  // A local ad-hoc app has no Team ID; permit Electron's signed framework.
+  // Release signing keeps its existing hardened-runtime entitlements.
+  optionsForFile: () => macIdentity === '-' ? {
+    timestamp: 'none', entitlements: path.resolve('desktop/macos-local-entitlements.plist'),
+  } : {},
 };
 const config: ForgeConfig = {
   outDir: process.env.PORTAL_DESKTOP_PACKAGE_OUT || 'out',
@@ -50,7 +56,7 @@ const config: ForgeConfig = {
       if (process.platform === 'darwin') execFileSync(process.execPath, ['scripts/sign-macos-runtime.mjs'], { stdio: 'inherit' });
     },
     postPackage: async (_forgeConfig, result) => {
-      if (result.platform === 'darwin' && !macLocalTest) {
+      if (result.platform === 'darwin' && !macAdhoc) {
         for (const output of result.outputPaths) {
           const app = path.join(output, `${pkg.productName}.app`);
           await verifyMacSignature(app, signing.clientIdentifier);
@@ -62,9 +68,9 @@ const config: ForgeConfig = {
       if (process.platform === 'darwin') {
         for (const dmg of makeResults.flatMap(result => result.artifacts).filter(file => file.endsWith('.dmg'))) {
           execFileSync('/usr/bin/codesign', ['--force', '--sign', macIdentity, '--identifier', macDmgIdentifier,
-            ...(macLocalTest ? ['--timestamp=none'] : ['--timestamp']),
+            ...(macAdhoc ? ['--timestamp=none'] : ['--timestamp']),
             ...(process.env.PORTAL_DESKTOP_MAC_KEYCHAIN ? ['--keychain', process.env.PORTAL_DESKTOP_MAC_KEYCHAIN] : []), dmg], { stdio: 'inherit' });
-          if (!macLocalTest) await verifyMacSignature(dmg, macDmgIdentifier);
+          if (!macAdhoc) await verifyMacSignature(dmg, macDmgIdentifier);
         }
       }
       return makeResults;

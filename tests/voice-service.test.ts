@@ -103,3 +103,11 @@ test('only the trusted main frame may request microphone access', () => {
   expect(allowVoicePermission(true, 'media', false, url, url, ['audio'])).toBe(false);
   expect(allowVoicePermission(true, 'media', true, 'beings://chat/', url, ['audio'])).toBe(false);
 });
+
+test('diagnostics allow only bounded state fields and strip arbitrary content',()=>{
+ const {service,socket,input}=setup();service.start(input);
+ const event={type:'client.diagnostic',reason:'voice_audio_state',state:'paused-confirmed',context_state:'running',generation:7,paused_ms:3000,queued_ms:500,frames:4};
+ service.send(input.callId,{...event,transcript:'must-not-forward',pcm:'must-not-forward'} as never);
+ expect(JSON.parse(socket.send.mock.calls.at(-1)![0])).toEqual(event);
+ for(const patch of [{state:'unknown'},{reason:'unapproved'},{paused_ms:NaN},{queued_ms:-1},{frames:1.2},{generation:-1},{context_state:'unknown'}])expect(()=>service.send(input.callId,{...event,...patch} as never)).toThrow();service.stop();
+});

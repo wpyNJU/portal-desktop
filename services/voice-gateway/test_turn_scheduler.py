@@ -26,6 +26,20 @@ async def main():
     a=asyncio.create_task(s.deliver(first));b=asyncio.create_task(s.deliver(second))
     await asyncio.sleep(.15);assert order==[1]
     s.update(playing=False);await asyncio.gather(a,b);assert order==[1,2]
+    # Completed synthesis can still own the lock while real PCM drains.
+    # Interrupting in that window must release it without clearing a new turn.
+    emitted=asyncio.Event()
+    async def draining(stop):
+        s.update(playing=True);emitted.set()
+    old=asyncio.create_task(s.deliver(draining));await emitted.wait()
+    await asyncio.sleep(.01);assert s.current.done() and s.lock.locked()
+    s.update(user=True);s.interrupt()
+    s.update(user=False,playing=False,generating=True)
+    assert await asyncio.wait_for(old,.3) is False
+    assert s.generating and not s.lock.locked()
+    next_turn=asyncio.create_task(s.deliver(second));await asyncio.sleep(.08)
+    assert not next_turn.done(), 'The new question must retain output priority'
+    s.update(generating=False);assert await asyncio.wait_for(next_turn,.3)
     s.update(user=True);task=asyncio.create_task(s.deliver(action));await asyncio.sleep(.01);s.close();assert not await task
     assert '任务已经结束' not in result_notice('任务仍然进行中。')
     print('PASS: user/generation/playback busy, quiet interval, interrupt, pending retention, FIFO, close, honest notice')

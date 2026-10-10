@@ -1,6 +1,6 @@
 import type { Connection } from '../chat/connection';
 import { redact } from '../chat/connection';
-import { VOICE_OPTIONS, type VoiceCommand, type VoiceEvent, type VoiceStart, type VoiceProfile } from '../../shared/voice';
+import { VOICE_OPTIONS, VOICE_AUDIO_DIAGNOSTIC_STATES, type VoiceCommand, type VoiceEvent, type VoiceStart, type VoiceProfile } from '../../shared/voice';
 
 // Existing being voice gateway. Credentials are added here, never in a renderer URL.
 export const VOICE_GATEWAY = 'wss://6af7181982ba42a8-55442.cn-south-nas-3.gpu-instance.ppinfra.com/pipeline/ws';
@@ -115,6 +115,16 @@ export class VoiceService {
         if (command.generation !== undefined && (!Number.isSafeInteger(command.generation) || command.generation < 0))
           throw new Error('无效的播放轮次。');
         data = { type: command.type, playing: command.playing === true, generation: command.generation }; break;
+      case 'client.diagnostic':
+        if (command.reason !== 'voice_audio_state' || !VOICE_AUDIO_DIAGNOSTIC_STATES.includes(command.state) ||
+            !['running', 'suspended', 'closed'].includes(command.context_state) ||
+            (command.generation !== undefined && (!Number.isSafeInteger(command.generation) || command.generation < 0)) ||
+            ![command.paused_ms, command.queued_ms].every(value => Number.isFinite(value) && value >= 0 && value <= 3600000) ||
+            !Number.isSafeInteger(command.frames) || command.frames < 0 || command.frames > 100000)
+          throw new Error('无效的音频诊断。');
+        // Copy only the controlled, content-free fields across the gateway boundary.
+        data = { type: command.type, reason: command.reason, state: command.state, generation: command.generation,
+          context_state: command.context_state, paused_ms: command.paused_ms, queued_ms: command.queued_ms, frames: command.frames }; break;
       case 'task.segment.played':
         if (typeof command.token !== 'string' || command.token.length > 256) throw new Error('无效的播放确认。');
         data = { type: command.type, token: command.token }; break;
