@@ -13,3 +13,5 @@ macOS 默认通过显式 PORTAL_DESKTOP_MAC_ADHOC_RELEASE=1 构建临时签名�
 先更新 package.json、package-lock.json 的版本及 desktop/RELEASE_NOTES.md，提交并推送后再创建同版本标签。不要移动已有标签。若构建成功但上传中断，可使用 publish-existing.yml，输入原版本标签和构建 run ID 恢复发布。
 
 语音网关代码也在仓库内，但桌面 Release 不会自动部署云端服务。服务器密钥、任务库及日志不随源码或安装包发布。
+
+如果标签推送时 Actions 尚未启用，可在 Build paired client release 页面点击 Run workflow，选择 main，并输入已有标签（如 v1.1.1）。工作流会检出该标签的源码，验证版本一致及版本尚未发布，不移动标签。手动运行失败后可在该运行页面重试失败任务。
