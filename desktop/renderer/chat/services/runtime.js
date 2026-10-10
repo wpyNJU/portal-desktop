@@ -2367,21 +2367,23 @@ function createStreamRuntime(state, options) {
 
   // 本地已经渲染、但还没被历史游标覆盖的消息。用于避免"本地回显 + 历史对账"渲染两遍。
   let localEchoes = [];
-  function normalizeEcho(text) {
+  function normalizeEcho(text, role) {
+    // Scene routing cues travel on the wire but are absent from saved user text.
+    if (role === "user") text = stripSceneTransition(text || "");
     return (cleanContent(text || "") || "").replace(/\s+/g, " ").trim();
   }
   function noteLocalEcho(role, text, scene = state.activeScene, localMessage) {
     const owner = options.historyOwner?.();
     if (owner) return owner.noteLocalEcho(role, text, scene, localMessage);
-    const t = normalizeEcho(text);
+    const t = normalizeEcho(text, role);
     if (!t) return;
-    const message = localMessage || [...state.items].reverse().find(item => item.kind === "message" && item.role === role && item.sceneId === scene.sceneId && normalizeEcho(item.text) === t);
+    const message = localMessage || [...state.items].reverse().find(item => item.kind === "message" && item.role === role && item.sceneId === scene.sceneId && normalizeEcho(item.text, role) === t);
     // History can win the race against message_stop. In that order the normal
     // history -> local echo matcher has not been registered yet, so reconcile
     // the already-rendered persisted row back into the live bubble here.
     const history = [...state.items].reverse().find(item => item !== message &&
       item.kind === "message" && item.historySeq && item.role === role &&
-      normalizeEcho(item.text) === t && echoScenesMatch(item, message || scene));
+      normalizeEcho(item.text, role) === t && echoScenesMatch(item, message || scene));
     if (history && message) {
       applyHistoryIdentity(message, history);
       state.items = state.items.filter(item => item !== history);
@@ -2408,7 +2410,7 @@ function createStreamRuntime(state, options) {
     }
   }
   function consumeLocalEcho(role, text, scene, history) {
-    const t = normalizeEcho(text);
+    const t = normalizeEcho(text, role);
     if (!t) return false;
     for (let i = 0; i < localEchoes.length; i++) {
       const echo = localEchoes[i];

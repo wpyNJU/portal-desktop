@@ -295,6 +295,8 @@ try {
   await chat.locator('#input').fill('Bound scene message');
   await chat.locator('#send-btn').click();
   await chat.locator('.message.user').filter({hasText:'Bound scene message'}).waitFor();
+  await chat.getByText('回复：Bound scene message',{exact:true}).waitFor();
+  assert.equal(await chat.locator('.message.user').filter({hasText:'Bound scene message'}).count(),1,'Scene wire cues must not duplicate the persisted user echo');
   assert.equal((await application.evaluate(() => globalThis.fixture.requests)).at(-1).scene_id,'feishu-shared');
   await page.reload();
   await page.getByRole('button',{name:'切换到场景：跨客户端场景'}).waitFor();
