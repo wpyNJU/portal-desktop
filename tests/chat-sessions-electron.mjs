@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, copyFile, writeFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { _electron as electron } from 'playwright';
-import { waitForChatReady } from './support/desktop.mjs';
+import { clickChatControl, clickWhenPointerReady, waitForChatReady } from './support/desktop.mjs';
 
 const directory = await mkdtemp(path.join(os.tmpdir(), 'portal-chat-sessions-'));
 let application;
@@ -307,8 +307,18 @@ try {
   // Scheduling is inspectable process metadata, never inline conversation prose.
   const wire = '独立问题\n\n[Desktop 场景调度提示]\n当前输入属于 scene_id="feishu-shared"。本客户端其他场景尚在处理或等待回复：\n[{"scene_id":"background-a"}]\n[/Desktop 场景调度提示]';
   await chat.locator('#input').fill(wire);
-  await chat.locator('#send-btn').click();
-  await chat.locator('.run-activity .scene-scheduling').waitFor({state:'attached'});
+  await clickChatControl(page, '#send-btn');
+  try {
+    await chat.locator('.run-activity .scene-scheduling').waitFor({state:'attached'});
+  } catch (error) {
+    console.error('Scheduling fixture diagnostics:', JSON.stringify({
+      requests: (await application.evaluate(() => globalThis.fixture.requests)).slice(-3),
+      input: await chat.locator('#input').inputValue(),
+      transcript: await chat.locator('body').innerText(),
+    }));
+    await page.screenshot({animations:'disabled',path:'test-results/chat-scheduling-failure.png'});
+    throw error;
+  }
   const visibleQuestion = chat.locator('.message.user').filter({hasText:'独立问题'});
   assert.equal(await visibleQuestion.locator('.content').innerText(), '独立问题');
   assert.equal(await visibleQuestion.locator('.scene-scheduling').count(), 0);
@@ -318,7 +328,7 @@ try {
   await chat.getByText('回复：独立问题',{exact:true}).waitFor();
   await chat.locator('.run-activity:not(.running)').filter({has:chat.locator('.scene-scheduling pre')}).waitFor({state:'attached'});
   assert.equal(await schedulingRun.getAttribute('open'), null);
-  await schedulingRun.locator('summary').click();
+  await clickWhenPointerReady(page, schedulingRun.locator('summary'));
   await schedulingRun.locator('.scene-scheduling pre').waitFor({state:'visible'});
   assert.match(await schedulingRun.locator('.scene-scheduling pre').innerText(), /background-a/);
   const pushTasks = async status => page.evaluate(async status => {
