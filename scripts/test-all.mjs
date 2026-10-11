@@ -51,6 +51,9 @@ try {
   await persist();
   await requirePortalSource();
   await npm('typecheck', ['run', 'typecheck']);
+  // This UI fixture builds its own assets and does not need the native engine.
+  // Catch scene regressions before spending time compiling and packaging Rust.
+  await npm('chat-sessions', ['run', 'test:chat-sessions']);
   // Native Windows unit tests exercise the bundled Portal from resources/.
   // Build it before Vitest; a clean CI checkout has no generated binary yet.
   if (!flags.has('--reuse-package')) await npm('build-portal', ['run', 'build:portal']);
@@ -92,7 +95,6 @@ try {
   await npm('chat-scroll', ['run', 'test:chat-scroll']);
   await npm('chat-context-menu', ['run', 'test:chat-context-menu']);
   await npm('chat-history', ['run', 'test:chat-history']);
-  await npm('chat-sessions', ['run', 'test:chat-sessions']);
   await npm('client-context', ['run', 'test:client-context']);
   await npm('client-lifecycle', ['run', 'test:client-lifecycle']);
   await npm('portal-runtime', ['run', 'test:portal-e2e']);

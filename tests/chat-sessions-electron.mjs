@@ -4,6 +4,7 @@ import { mkdtemp, mkdir, copyFile, writeFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { _electron as electron } from 'playwright';
+import { waitForChatReady } from './support/desktop.mjs';
 
 const directory = await mkdtemp(path.join(os.tmpdir(), 'portal-chat-sessions-'));
 let application;
@@ -90,7 +91,7 @@ try {
   page.setDefaultTimeout(15000);
   const errors=[]; page.on('pageerror',error=>errors.push(error.message));
   const chat = page.frameLocator('iframe');
-  await chat.locator('#input').waitFor();
+  await waitForChatReady(page);
   const original = await page.evaluate(async () => (await window.beings.snapshot()).chatScene.scene_id);
   await chat.locator('#input').fill('原会话草稿');
   await page.getByRole('button',{name:'新建场景',exact:true}).click();
@@ -271,6 +272,7 @@ try {
   const replacement = await page.evaluate(async () => (await window.beings.snapshot()).chatScene.scene_id);
   assert.notEqual(replacement,discussion);
   await page.reload();
+  await waitForChatReady(page);
   await page.getByRole('button',{name:'切换到场景：新场景'}).waitFor();
   assert.equal(await page.evaluate(async () => (await window.beings.snapshot()).chatScene.scene_id),replacement);
   await page.getByRole('checkbox',{name:'显示全部场景上下文',exact:true}).check();
@@ -299,6 +301,7 @@ try {
   assert.equal(await chat.locator('.message.user').filter({hasText:'Bound scene message'}).count(),1,'Scene wire cues must not duplicate the persisted user echo');
   assert.equal((await application.evaluate(() => globalThis.fixture.requests)).at(-1).scene_id,'feishu-shared');
   await page.reload();
+  await waitForChatReady(page);
   await page.getByRole('button',{name:'切换到场景：跨客户端场景'}).waitFor();
   assert.equal((await page.evaluate(() => window.beings.snapshot())).chatScene.scene_id,'feishu-shared');
   // Scheduling is inspectable process metadata, never inline conversation prose.
