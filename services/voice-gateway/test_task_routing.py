@@ -51,9 +51,23 @@ class RoutingTests(unittest.IsolatedAsyncioTestCase):
         a,_=self.submit('one',intent=intent);b,_=self.submit('two',intent=intent)
         c,reused=self.submit('one',intent=intent)
         self.assertNotEqual(a,b);self.assertEqual(a,c);self.assertTrue(reused)
-    async def test_missing_or_invalid_intent_does_not_start(self):
-        for intent in (None,{},dict(self.intent,conditions='invalid')):
+    async def test_invalid_legacy_intent_does_not_start(self):
+        for intent in ({},dict(self.intent,conditions='invalid')):
             with self.assertRaises(ValueError):self.submit('one',intent=intent)
         self.assertFalse(self.manager.jobs)
+    async def test_flat_calls_deduplicate_only_same_transport_request(self):
+        a,_=self.submit('one',intent=None)
+        b,reused=self.submit('two',intent=None)
+        self.assertNotEqual(a,b);self.assertFalse(reused)
+        c,reused=self.submit('one',intent=None)
+        self.assertEqual(a,c);self.assertTrue(reused)
+        with self.assertRaises(ValueError):self.submit('one',message='different request',intent=None)
+
+    def test_voice_schema_matches_flat_gateway_contract(self):
+        from doubao_config import TOOL,INSTRUCTIONS
+        properties=TOOL['parameters']['properties']
+        self.assertEqual(set(properties),{'message','operation','existing_task_id'})
+        self.assertTrue(all(p['type']=='string' for p in properties.values()))
+        self.assertNotIn('intent',INSTRUCTIONS)
 
 if __name__=='__main__':unittest.main()

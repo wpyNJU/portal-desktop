@@ -75,8 +75,21 @@ INSTRUCTIONS+='''
 TOOL['description']='连接Being执行用户需求：既支持外部信息/私人记忆查询，也支持用户明确授权的实际操作（如停止指定服务、启动任务、修改文件）。没有统一的只读限制。查询用intent.kind=lookup，操作用action。不要因语音端没有本地权限而拒绝转交；权限由Being执行时核实。追问已提交的操作使用原任务ID，不重复执行。'
 TOOL['parameters']['properties'].pop('acknowledgement',None)
 INSTRUCTIONS=INSTRUCTIONS.replace('acknowledgement用一句自然接话，由程序播报，不另说一遍。','接话和任务提交提示均由程序播报，不生成acknowledgement字段，不另说一遍。')
-INSTRUCTIONS+='\n网关会先随机播一句简短接话，任务成功提交后再单独播报具体任务主题。不要再次复述提交提示，工具结果返回后直接讲结果。'
+INSTRUCTIONS+='\n网关仅在需要等待查询时安排简短接话，已经接过话就不再重复提交提示。普通问题和已有信息能回答的追问直接回答。不要再次复述接话或提交提示，工具结果返回后直接讲结果。'
 INSTRUCTIONS+='\n结果已经由你概述后，不因为任务cursor=0、delivery=awaiting_choice或状态变成completed再调用saved_task continue。cursor仅记录原文逐句朗读的位置，不代表你没回复。continue/replay会重新朗读原文，只在用户明确要求继续朗读已保存报告或重播时调用；“嗯”“好的”“知道了”“谢谢”及普通状态追问都不授权重播。'
 
 INSTRUCTIONS+='\n【追问内容与控制播放分开】用户追问“他说的具体消息是什么”“具体怎么说的”“为什么”“详细解释”，是在索取对应事实或解释，不是要求重播旧报告。先判断已有正文能否回答：上下文不足时用saved_task get读取；已包含所需事实就直接回答重点，不调用continue/replay。只有概述、没有所问原文或细节时，调用ask_agent create补查缺失内容，带上前文人物、消息编号、回复对象及所需细节；不是重新泛查所有最新消息。旧查询完成不代表新问题已回答。用户明确说“继续念刚才的报告”“把原报告从头读一遍”才用continue/replay；裸“继续”须结合前文确实在暂停朗读的场景。不要把任务cursor或awaiting_choice当成用户要求重播的证据。'
 SAVED_TASK['parameters']['properties']['action']['description']='list/get读取已有任务供你回答；continue/replay会直接朗读旧报告，仅在用户明确要求续读/重播时使用。追问具体消息、细节、解释不等于朗读报告，应get核对，缺失的事实用ask_agent补查。defer暂停播报。'
+
+# Nested intent sometimes arrives as a string containing parameter delimiters,
+# losing message entirely. Keep the voice contract flat; legacy callers can
+# still supply validated structured intent to the gateway.
+TOOL['parameters']['properties']={k:TOOL['parameters']['properties'][k]
+    for k in ('message','operation','existing_task_id')}
+TOOL['description']=TOOL['description'].replace('查询用intent.kind=lookup，操作用action。','')
+INSTRUCTIONS=INSTRUCTIONS.replace('title简短区分主题，','主题由网关生成，')
+INSTRUCTIONS=INSTRUCTIONS.replace('message与intent简洁保留必要条件','message简洁保留必要条件')
+INSTRUCTIONS=INSTRUCTIONS.replace('operation=create、intent.kind=action','operation=create')
+INSTRUCTIONS=INSTRUCTIONS.replace(
+    'create/requery必须提供intent。请求ID由网关从工具调用生成，不自行编写。先与任务卡片intent比较，同一运行需求直接read，补充或改变实质条件才create。标题和请求文字不是任务身份。',
+    '新请求只生成message和operation；read/requery再附已有任务的existing_task_id。请求ID由网关生成。结合最近对话与任务卡片识别同一运行需求，直接read该任务ID；补充或改变实质条件才create。后端不会按请求文字自动合并新请求。')

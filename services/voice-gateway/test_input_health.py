@@ -19,4 +19,10 @@ class InputHealthTests(unittest.TestCase):
         self.assertEqual(self.health.snapshot(),{'frames':1,'frame_gap':1,'signal_gap':None,'pending_seconds':5,'muted':False})
         self.health.asr('failed');self.assertEqual(self.health.snapshot()['pending_seconds'],0)
 
+    def test_duplicate_started_does_not_postpone_stall_forever(self):
+        self.health.asr('started');self.t=10;self.health.asr('started')
+        self.t=13;self.assertTrue(self.health.stalled())
+        self.health.asr('failed');self.assertFalse(self.health.stalled())
+        self.health.asr('started');self.assertEqual(self.health.snapshot()['pending_seconds'],0)
+
 if __name__=='__main__':unittest.main()

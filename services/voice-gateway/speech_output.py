@@ -102,9 +102,9 @@ class SpeechOutput:
                 self.scheduler.update(generating=False)
                 await self.switch(None)
 
-    async def begin_scheduled(self, stop):
+    async def begin_scheduled(self, stop, *, valid=None):
         async with self.lock:
-            if stop.is_set() or self.scheduler.closed:
+            if stop.is_set() or self.scheduler.closed or (valid is not None and not valid()):
                 return False
             await self.switch(('scheduled', stop))
             return True

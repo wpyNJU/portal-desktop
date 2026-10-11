@@ -84,12 +84,10 @@ class ExistingTaskTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(release.is_set(),'Query must start before acknowledgement finishes')
         release.set();f.tool.scheduler.update(generating=False)
         await f.until(lambda:bool(f.tool.acknowledged_turns))
-        await f.until(lambda:len(spoken)==2)
         f.gate.set();await asyncio.sleep(.05)
         from voice_notices import ACKNOWLEDGEMENTS
         self.assertIn(spoken[0],ACKNOWLEDGEMENTS)
-        self.assertIn('我正在查',spoken[1])
-        self.assertEqual(len(spoken),2,'One acknowledgement and one specific submission notice')
+        self.assertEqual(len(spoken),1,'Do not repeat a transition when the real query starts')
     async def test_interrupted_quick_ack_does_not_speak_in_next_turn(self):
         f=self.fixture;f.tool.scheduler.update(user=True,generating=True)
         f.tool.acknowledge_request()
@@ -97,11 +95,78 @@ class ExistingTaskTests(unittest.IsolatedAsyncioTestCase):
         f.tool.scheduler.update(user=False,generating=False)
         await asyncio.sleep(.06)
         self.assertFalse(any(e['type']=='opening.audio' for e in f.events))
+    async def test_fast_tool_cannot_race_delayed_transition_into_two_notices(self):
+        f=self.fixture;f.tool.acknowledge_request(delay=.05)
+        self.submit('fast-tool')
+        await asyncio.wait_for(f.started.wait(),.3)
+        await f.until(lambda:any(e['type']=='agent.opening' for e in f.events))
+        await asyncio.sleep(.15)
+        self.assertEqual(len([e for e in f.events if e['type']=='agent.opening']),1)
+        from voice_notices import ACKNOWLEDGEMENTS
+        self.assertIn(next(e['text'] for e in f.events if e['type']=='agent.opening'),ACKNOWLEDGEMENTS)
+        f.gate.set()
     async def test_native_reply_suppresses_delayed_ack(self):
         f=self.fixture;f.tool.acknowledge_request(delay=.05)
         f.tool.acknowledged_turns.add(f.tool.audio.turn)
         await asyncio.sleep(.08)
         self.assertFalse(any(e['type']=='opening.audio' for e in f.events))
+    async def test_simple_question_waits_for_its_answer_without_canned_speech(self):
+        f=self.fixture
+        await f.remote.put(json.dumps({'type':'conversation.item.input_audio_transcription.completed',
+                                      'item_id':'q2','text':'二加二等于多少？'}))
+        await f.until(lambda:f.tool.audio.question=='q2')
+        # Reproduce a reply whose captions precede audio beyond the old .7s timer.
+        await f.remote.put(json.dumps({'type':'response.output_text.delta','response_id':'r2',
+                                      'question_id':'q2','delta':'二加二等于四。'}))
+        await f.until(lambda:any(e['type']=='response.output_text.delta' for e in f.events))
+        await asyncio.sleep(.8)
+        await f.remote.put(json.dumps({'type':'response.output_audio.started','response_id':'r2','question_id':'q2'}))
+        await f.remote.put(json.dumps({'type':'response.output_audio.delta','delta':'four'}))
+        await f.until(lambda:any(e.get('delta')=='four' for e in f.events))
+        self.assertEqual(f.tool.quick_acks,{})
+        self.assertFalse(f.started.is_set())
+        self.assertFalse(any(e['type']=='opening.audio' for e in f.events))
+    async def test_implicit_query_gets_transition_before_slow_tool_selection(self):
+        f=self.fixture
+        f.tool.run.__globals__['context']['history']=[{'role':'user','text':'刚才篝火里张三说了什么？'}]
+        await f.remote.put(json.dumps({'type':'conversation.item.input_audio_transcription.completed',
+                                      'item_id':'q2','text':'那他后来又说了什么？'}))
+        await f.until(lambda:any(e['type']=='opening.audio' for e in f.events))
+        self.assertFalse(f.started.is_set(),'A transition must not submit a query by itself')
+        self.assertEqual(len([e for e in f.events if e['type']=='agent.opening']),1)
+        self.submit('implicit-tool')
+        await asyncio.wait_for(f.started.wait(),.3)
+        await asyncio.sleep(.1)
+        self.assertEqual(len([e for e in f.events if e['type']=='agent.opening']),1)
+        f.gate.set()
+    async def test_native_captions_cancel_pending_filler_and_preserve_audio(self):
+        f=self.fixture;await f.tool.audio.user_started('q2')
+        f.tool.acknowledge_request(delay=.03)
+        await f.tool.audio.provider({'type':'response.output_text.delta','response_id':'r2',
+                                     'question_id':'q2','delta':'我知道，答案是四。'})
+        await asyncio.sleep(.06)
+        await f.tool.audio.provider({'type':'response.output_audio.started','response_id':'r2','question_id':'q2'})
+        await f.tool.audio.provider({'type':'response.output_audio.delta','delta':'answer'})
+        self.assertFalse(any(e['type']=='opening.audio' for e in f.events))
+        self.assertTrue(any(e.get('delta')=='answer' for e in f.events))
+        self.assertNotIn('r2',f.tool.audio.blocked_responses)
+    async def test_native_answer_preempts_filler_still_being_synthesized(self):
+        f=self.fixture;await f.tool.audio.user_started('q2')
+        entered=asyncio.Event();release=asyncio.Event()
+        async def slow_speech(text,client,stop,valid,**kwargs):
+            entered.set();await release.wait()
+            if not stop.is_set() and valid():await client({'type':'opening.audio','delta':text})
+        f.tool.run.__globals__['speak_opening']=slow_speech
+        f.tool.acknowledge_request()
+        await asyncio.wait_for(entered.wait(),.3)
+        await f.tool.audio.provider({'type':'response.output_text.delta','response_id':'r2',
+                                     'question_id':'q2','delta':'直接回答。'})
+        release.set()
+        await f.tool.audio.provider({'type':'response.output_audio.started','response_id':'r2','question_id':'q2'})
+        await f.tool.audio.provider({'type':'response.output_audio.delta','delta':'answer'})
+        await asyncio.sleep(.03)
+        self.assertFalse(any(e['type']=='opening.audio' for e in f.events))
+        self.assertTrue(any(e.get('delta')=='answer' for e in f.events))
     async def test_old_task_supplement_does_not_interrupt_new_topic(self):
         f=self.fixture;key=f.store.create('s','old question')
         f.store.update('s',key,state='completed',delivery='awaiting_choice',text='后来追加的结果应该留在记录里面。')

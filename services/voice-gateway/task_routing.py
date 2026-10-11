@@ -13,7 +13,8 @@ def routing(args,call_id,store,scope):
     request_id=args.get('request_id',call_id)
     if not isinstance(request_id,str) or not 1<=len(request_id)<=160:raise ValueError('invalid request ID')
     intent=args.get('intent')
-    if args.get('operation') is not None and intent is None:raise ValueError('intent required')
+    # The voice tool uses flat parameters. Missing optional legacy intent keeps
+    # requests separate; never infer an identity by comparing request prose.
     if intent is not None:
         if not isinstance(intent,dict) or set(intent)!={'kind','subject','goal','time_range','conditions'}:raise ValueError('invalid intent')
         if intent['kind'] not in ('lookup','action'):raise ValueError('invalid kind')

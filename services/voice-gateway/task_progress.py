@@ -97,7 +97,7 @@ class TaskProgress:
 
     def observe(self, row):
         """Merge the latest real stage; polling never repeats an attempted stage."""
-        if self.closed or not isinstance(row, dict) or not row.get('id'):
+        if self.closed or not isinstance(row, dict) or not row.get('id') or row.get('kind')=='reply':
             return False
         key = row['id']
         self.rows[key] = dict(row)

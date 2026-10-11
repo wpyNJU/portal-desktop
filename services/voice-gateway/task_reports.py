@@ -25,6 +25,9 @@ class TaskReports:
     def priority(self,key,phase=1):return (self.store.get(self.scope,key)['requested_at'],phase)
     def start(self,key,restart=False,notice=False,requested=True):
         row=self.store.get(self.scope,key)
+        if row.get('reply_task_id'):
+            if not requested:return '会话回复已统一安排，不重复报告'
+            return self.start(row['reply_task_id'],restart=restart,notice=notice,requested=True)
         if requested:
             self.store.touch(self.scope,key);self.focus=key
             # An explicit request also upgrades an already queued excerpt.

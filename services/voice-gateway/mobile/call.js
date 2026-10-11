@@ -492,6 +492,7 @@ const taskStates={running:'查询中',completed:'查询已返回',error:'查询�
 function renderTasks(){
  const box=$('tasks-list');box.textContent='';
  for(const row of taskRows.values()){
+  if(row.kind==='reply')continue;
   const card=document.createElement('div');card.className='card';const title=document.createElement('div');title.textContent=row.title;
   const state=document.createElement('div');state.className='note';state.textContent=(taskStates[row.state]||row.state)+' · '+(taskStates[row.delivery]||row.delivery)+' · '+new Date(row.created*1000).toLocaleString();
   const button=document.createElement('button');button.className='setting-button';button.textContent='查看完整结果';button.onclick=()=>getTask(row.id,0);card.append(title,state,button);box.append(card);

@@ -21,6 +21,7 @@ class BackgroundTasks:
         self.jobs = {}
         self.progress = {}
         self.scopes = {}
+        self.conversations = {}
 
     def submit(self, scope, identity, cacheable, message, bridge, context, title=None, request_id=None, intent=None, parent_id=''):
         intent_json=json.dumps(intent,sort_keys=True,ensure_ascii=False) if intent else ''
@@ -76,7 +77,17 @@ class BackgroundTasks:
                 return
             parts.append(text); stage('text')
             self.store.update(scope, task_id, text=''.join(parts))
-        request = asyncio.create_task(bridge.stream(message, context, stop, emit, stage=stage))
+        conversation=None
+        if context.get('conversation_mode') and hasattr(bridge,'endpoint'):
+            from being_conversation import BeingConversation
+            conversation=self.conversations.get(scope)
+            if conversation is None or conversation.closed:
+                conversation=BeingConversation(self.store,scope,bridge)
+                self.conversations[scope]=conversation
+            request=asyncio.create_task(conversation.request(task_id,message,context,stage))
+        else:
+            request = asyncio.create_task(bridge.stream(message, context, stop, emit, stage=stage))
+        shared_reply=''
         state = 'error'
         failure = None
         try:
@@ -85,15 +96,18 @@ class BackgroundTasks:
                     await asyncio.wait([request], timeout=.25)
                     if time.monotonic()-last > self.idle_timeout:
                         raise TimeoutError()
-                await request
-            if not parts:raise AgentFailure('empty_reply')
+                result=await request
+            if conversation and isinstance(result,dict):shared_reply=result.get('reply_task_id','')
+            if not parts and not shared_reply:raise AgentFailure('empty_reply')
             state = 'completed'
         except asyncio.CancelledError:
             state = 'interrupted'
             failure = AgentFailure('gateway_interrupted')
             raise
         except Exception as exc:
-            failure=exc if isinstance(exc,AgentFailure) else AgentFailure('reply_timeout' if isinstance(exc,TimeoutError) else 'unexpected_error')
+            code='reply_timeout'
+            if conversation and self.store.get(scope,task_id).get('reply_task_id'):code='reply_unattributed'
+            failure=exc if isinstance(exc,AgentFailure) else AgentFailure(code if isinstance(exc,TimeoutError) else 'unexpected_error')
             if failure.code=='upstream_interrupted':state='interrupted'
             logger.warning('background_task_failed id=%s kind=%s code=%s', task_id, type(exc).__name__,failure.code)
         finally:
@@ -103,6 +117,9 @@ class BackgroundTasks:
             body=''.join(parts)
             # A bounded literal excerpt, never reasoning or a generated conclusion.
             summary=('原文摘录：'+body.strip()[:235]) if body.strip() else ''
+            if conversation:
+                summary=self.store.get(scope,task_id).get('summary','')
+            if shared_reply:self.store.update(scope,task_id,reply_task_id=shared_reply,delivery='reported')
             self.store.update(scope, task_id, state=state, text=body,stage=state,stage_updated=time.time(),summary=summary,
                               error_code=failure.code if failure else '',error_message=failure.public_message if failure else '')
             logger.info('background_task_done id=%s state=%s elapsed=%.3f', task_id, state, time.monotonic()-started)
@@ -114,3 +131,4 @@ class BackgroundTasks:
         jobs=list(self.jobs.values())
         for job in jobs:job.cancel()
         await asyncio.gather(*jobs, return_exceptions=True)
+        await asyncio.gather(*(c.close() for c in self.conversations.values()),return_exceptions=True)

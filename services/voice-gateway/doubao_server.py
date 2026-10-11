@@ -25,7 +25,10 @@ task_store=TaskStore(ROOT/'agent-tasks.sqlite3');task_store.recover()
 background_tasks=BackgroundTasks(task_store)
 
 @app.on_event('shutdown')
-async def shutdown_background():await background_tasks.shutdown()
+async def shutdown_background():
+    from notice_audio import shared_cache
+    await shared_cache.close()
+    await background_tasks.shutdown()
 logging.getLogger('httpx').setLevel(logging.WARNING)
 logger=logging.getLogger('voice.connection');logger.setLevel(logging.INFO)
 if not logger.handlers:
@@ -66,6 +69,11 @@ async def speak_opening(text,client,stop,valid,voice=DEFAULT_VOICE):
     except Exception as exc:
         logger.warning('speech_synthesis_failed kind=%s',type(exc).__name__)
 
+@app.on_event('startup')
+async def prepare_notice_audio():
+    from notice_audio import shared_cache
+    shared_cache.prepare(DEFAULT_VOICE,speak_opening)
+
 @app.get('/health')
 def health():
     providers=capabilities(ROOT)
@@ -88,9 +96,15 @@ class ToolCalls:
         self.context=context if context is not None else {'scene':'voice-'+str(uuid.uuid4())}
         self.scope=self.context.get('scope',self.context['scene']);self.task_ids={}
         self.natural_ready={}
-        self.quick_acks={};self.acknowledged_turns=set();self.natural_notice_turns={}
+        self.quick_acks={};self.acknowledged_turns=set();self.native_response_turns=set();self.natural_notice_turns={}
         self.last_ack=None;self.announced_tasks=set()
         async def forwarded(event):
+            kind=event.get('type')
+            if (kind in ('response.output_audio.started','response.output_audio.delta') or
+                    (kind=='response.output_text.delta' and event.get('delta'))):
+                if self.audio.turn not in self.native_response_turns:
+                    self.native_response_turns.add(self.audio.turn)
+                    logger.info('native_reply_started turn=%s event=%s',self.audio.turn,kind)
             for receipt in self.natural_ready.values():
                 if receipt['turn']!=self.audio.turn:
                     receipt['interrupted']=True;receipt['ready'].set()
@@ -109,14 +123,17 @@ class ToolCalls:
         self.reports=TaskReports(task_store,self.scope,self.scheduler,self.client,speak,output=self.audio)
         from task_progress import TaskProgress
         self.progress=TaskProgress(task_store,self.scope,self.scheduler,self.client,speak,self.audio)
-    def acknowledge_request(self,delay=0):
+    def acknowledge_request(self,delay=0,topic='lookup'):
         turn=self.audio.turn
         if turn in self.quick_acks:return
         from voice_notices import acknowledgement
-        phrase=acknowledgement(self.last_ack);self.last_ack=phrase
+        phrase=acknowledgement(self.last_ack,topic);self.last_ack=phrase
         started=time.monotonic()
+        valid=lambda:not self.closed and self.audio.turn==turn and turn not in self.acknowledged_turns and turn not in self.native_response_turns
         async def acknowledge(stop):
-            if not await self.audio.begin_scheduled(stop):return
+            # Recheck under the output lock: text may have arrived while waiting
+            # for the lock, even though its matching audio has not arrived yet.
+            if not await self.audio.begin_scheduled(stop,valid=valid):return
             async def output(event):
                 if self.audio.turn!=turn or stop.is_set():return
                 sent=await self.audio.scheduled(event,stop)
@@ -124,11 +141,13 @@ class ToolCalls:
                     self.acknowledged_turns.add(turn)
                     logger.info('quick_ack_first_audio turn=%s elapsed=%.3f',turn,time.monotonic()-started)
                     await self.client({'type':'agent.opening','text':phrase})
-            await speak_opening(phrase,output,stop,lambda:not self.closed and self.audio.turn==turn,voice=self.voice)
+            from notice_audio import shared_cache
+            await shared_cache.speak(phrase,output,stop,lambda:not self.closed and self.audio.turn==turn,
+                voice=self.voice,synthesize=speak_opening)
         async def deliver():
             if delay:await asyncio.sleep(delay)
-            # Quick native answers need no filler; only cover a silent turn.
-            valid=lambda:not self.closed and self.audio.turn==turn and turn not in self.acknowledged_turns
+            # Native text already commits this turn to an answer. A filler must
+            # never clear that response and block its subsequent audio frames.
             if not valid():return
             await self.scheduler.deliver(acknowledge,foreground=True,
                 priority=(float('inf'),3),valid=valid)
@@ -176,15 +195,23 @@ class ToolCalls:
     async def announce_task(self,key,turn):
         if key in self.announced_tasks:return
         self.announced_tasks.add(key)
+        # A tool can now arrive before the .8s contextual transition. Let that
+        # one transition finish instead of racing it with another synthesizer.
+        # The service-owned query has already started and does not wait here.
+        pending_ack=self.quick_acks.get(turn)
+        if pending_ack and not pending_ack.done():await asyncio.shield(pending_ack)
         from voice_notices import submitted_notice
         phrase=submitted_notice(task_store.get(self.scope,key)['title'])
-        valid=lambda:not self.closed and self.audio.turn==turn and task_store.get(self.scope,key)['state']=='running' and not task_store.get(self.scope,key)['text']
+        valid=lambda:not self.closed and self.audio.turn==turn and turn not in self.acknowledged_turns and task_store.get(self.scope,key)['state']=='running' and not task_store.get(self.scope,key)['text']
         async def speak(stop):
-            if not await self.audio.begin_scheduled(stop):return
-            await self.client({'type':'agent.opening','text':phrase})
+            if not await self.audio.begin_scheduled(stop,valid=valid):return
             logger.info('task_submission_notice task=%s turn=%s',key,turn)
             async def output(event):
-                if not stop.is_set():await self.audio.scheduled(event,stop)
+                if stop.is_set():return
+                sent=await self.audio.scheduled(event,stop)
+                if sent and event.get('type')=='opening.audio' and turn not in self.acknowledged_turns:
+                    self.acknowledged_turns.add(turn)
+                    await self.client({'type':'agent.opening','text':phrase})
             await speak_opening(phrase,output,stop,lambda:not self.closed and self.audio.turn==turn,voice=self.voice)
         await self.scheduler.deliver(speak,priority=lambda:self.reports.priority(key,2),valid=valid,foreground=True)
 
@@ -199,6 +226,8 @@ class ToolCalls:
         if not reused:await self.announce_task(key,turn)
 
     async def defer(self,key):
+        linked=task_store.get(self.scope,key).get('reply_task_id')
+        if linked:key=linked
         if self.supplement_key==key:
             self.scheduler.interrupt();await self.audio.clear_scheduled(self.supplement_stop)
         return await self.reports.defer(key)
@@ -283,7 +312,7 @@ class ToolCalls:
                 request_turn=self.audio.turn
                 request_question=self.audio.question
                 self.task_ids[item['call_id']]=key
-                if self.natural_answers and not reused and request_turn not in self.natural_turns:
+                if self.natural_answers and not self.context.get('conversation_mode') and not reused and request_turn not in self.natural_turns:
                     self.natural_tasks.add(key);self.natural_turns.add(request_turn)
                 await self.reports.event(key)
                 await self.announce_task(key,request_turn)
@@ -296,6 +325,13 @@ class ToolCalls:
                     if key in self.natural_tasks and (self.audio.turn!=request_turn or useful):break
                     await asyncio.sleep(.25)
                 row=task_store.get(self.scope,key)
+                if row.get('reply_task_id'):
+                    self.natural_tasks.discard(key)
+                    results.append({'call_id':item['call_id'],'role':'tool','content':[{'type':'input_text','text':
+                        '[语音端已逐句显示并播报或安排报告，请保留事实供追问，不要自行重复朗读。]'+json.dumps({
+                            'task_id':key,'state':row['state'],'reply_task_id':row['reply_task_id'],
+                            'message':'多个请求可以共用会话回复。按需用saved_task get读取关联正文；回复已安排一次播报。'},ensure_ascii=False)}]})
+                    continue
                 natural=key in self.natural_tasks and self.audio.turn==request_turn and bool(row['text'])
                 if natural:
                     await self.scheduler.wait_idle()
@@ -541,10 +577,14 @@ async def connection(ws:WebSocket):
             return
         voice=initial_request.get('voice',DEFAULT_VOICE)
         if not isinstance(voice,str) or voice not in VOICES:voice=DEFAULT_VOICE
+        from notice_audio import shared_cache
+        shared_cache.prepare(voice,speak_opening)
         context['history']=normalize_history(initial_request.get('history',[]),limit=12000)
         profile=load_profile(profile_path)
         await send_client({'type':'session.status','message':'正在连接语音，使用已保存资料' if profile else '正在连接语音；可在设置中主动更新助手资料'})
         async with websockets.connect(URL,additional_headers=headers(),open_timeout=15,max_size=4_000_000) as remote:
+            from provider_recovery import RecoveringProvider
+            remote=RecoveringProvider(remote,lambda:websockets.connect(URL,additional_headers=headers(),open_timeout=5,max_size=4_000_000))
             async def send_up(data):
                 data.setdefault('event_id',str(uuid.uuid4()))
                 async with lock:await remote.send(json.dumps(data,ensure_ascii=False))
@@ -590,13 +630,14 @@ async def connection(ws:WebSocket):
             async def task_client(data):
                 if data.get('type')=='task.updated':context_sync.observe(data['task'])
                 await send_client(data)
+            context['conversation_mode']=True
             tools=ToolCalls(send_tool_result,task_client,context=context,voice=voice,agent=selected_bridge,natural_answers=True)
             from input_health import InputHealth
             input_health=InputHealth()
             tools.watcher=asyncio.create_task(tools.watch())
             async def downstream():
                 nonlocal current_question,previous_question,turn_interrupted
-                from input_policy import classify_input, explicit_campfire_lookup, needs_quick_ack
+                from input_policy import classify_input, explicit_campfire_lookup, quick_ack_plan
                 finished_inputs=set();input_open=False;pending_question=None;input_committed=False;input_was_audible=False;stop_cancelled=False
                 async def commit_input():
                     nonlocal current_question,previous_question,turn_interrupted,input_committed
@@ -623,12 +664,25 @@ async def connection(ws:WebSocket):
                     await tools.audio.block(question=current_question)
                     if not stop_cancelled:
                         stop_cancelled=True;await send_up({'type':'response.cancel'})
+                async def recover_input():
+                    nonlocal input_open,input_committed,pending_question,current_question,previous_question,stop_cancelled
+                    for question in (pending_question,current_question):
+                        if question:finished_inputs.add(question);blocked.add(question)
+                    input_open=False;input_committed=False;stop_cancelled=False
+                    pending_question=None;current_question=None;previous_question=None
+                    # Retire old tool continuations, not their service-owned queries.
+                    tools.interrupt(cancel_queries=True)
+                    await tools.audio.user_started()
+                    tools.scheduler.update(user=False,generating=False,playing=False)
+                    input_health.asr('failed')
+                    await send_client({'type':'conversation.item.input_audio_transcription.failed','reason':'recognition_timeout'})
+                input_health.recover=recover_input
                 async for raw in remote:
                     d=json.loads(raw);usage.observe(d);d=tools.audio.observe(d);kind=d.get('type','')
+                    if kind.startswith('conversation.item.input_audio_transcription.') and d.get('item_id') in finished_inputs:continue
                     if kind.startswith('conversation.item.input_audio_transcription.'):
                         stage=kind.rsplit('.',1)[-1];input_health.asr(stage)
                         if stage!='delta':logger.info('input_asr id=%s stage=%s metrics=%s',connection_id,stage,json.dumps(input_health.snapshot()))
-                    if kind.startswith('conversation.item.input_audio_transcription.') and d.get('item_id') in finished_inputs:continue
                     spoken=d.get('delta') or d.get('text') or ''
                     is_transcript=kind in ('conversation.item.input_audio_transcription.delta','conversation.item.input_audio_transcription.completed')
                     begins_input=(kind=='conversation.item.input_audio_transcription.started' or
@@ -658,8 +712,10 @@ async def connection(ws:WebSocket):
                         if stopping:
                             await stop_input()
                         if isinstance(d.get('text'),str):context['history']=normalize_history(context['history']+[{'role':'user','text':d['text']}],limit=12000)
-                        if not stopping and classify_input(d.get('text'))=='redirect':
-                            tools.acknowledge_request(delay=0 if needs_quick_ack(d.get('text')) else .7)
+                        transition=quick_ack_plan(d.get('text'),context['history']) if not stopping else None
+                        if transition:
+                            logger.info('quick_ack_planned id=%s turn=%s topic=%s delay=%.1f',connection_id,tools.audio.turn,transition['topic'],transition['delay'])
+                            tools.acknowledge_request(**transition)
                         if explicit_campfire_lookup(d.get('text')):
                             if current_question:
                                 blocked.add(current_question);streamed_questions.add(current_question)
@@ -788,7 +844,18 @@ async def connection(ws:WebSocket):
                     await asyncio.sleep(.25)
                     if input_health.stalled():
                         logger.warning('input_stalled id=%s metrics=%s',connection_id,json.dumps(input_health.snapshot()))
-                        await send_client({'type':'agent.status','text':'这句话的语音识别还没有完成，暂未提交查询。请检查麦克风是否仍开启；若持续无响应，请重新接通。'})
+                        await input_health.recover()
+                        await send_client({'type':'agent.status','text':'刚才这句话未能识别完，正在恢复语音；后台任务仍在继续。'})
+                        try:
+                            recovered=await remote.restart(create_session(instructions=context_sync.instructions(),voice=voice),create_session()['session']['tools'])
+                        except Exception as e:
+                            logger.warning('input_recovery_failed id=%s kind=%s',connection_id,type(e).__name__);recovered=False
+                        if not recovered:
+                            await send_client({'type':'error','message':'语音连接未能恢复，请重新接通；后台任务和已保存结果仍保留。'})
+                            return
+                        if input_health.muted:await send_up({'type':'input_audio_mute.commit'})
+                        logger.info('input_recovered id=%s attempts=%s',connection_id,remote.recoveries)
+                        await send_client({'type':'agent.status','text':'语音已恢复，请再说一遍刚才的问题；后台任务仍在继续。'})
                     scheduler=tools.scheduler
                     busy=(scheduler.user or scheduler.generating or scheduler.playing or scheduler.lock.locked()
                           or tools.reports.busy() or tools.manager.busy(scope) or any(not task.done() for task,stop in tools.pending))
@@ -817,6 +884,7 @@ async def connection(ws:WebSocket):
                 finally:
                     for task in (sending,receiving,idle_watch):task.cancel()
                     await asyncio.gather(sending,receiving,idle_watch,return_exceptions=True)
+                    await remote.close()
     except (WebSocketDisconnect,websockets.ConnectionClosed):pass
     except Exception as e:
         logging.warning('duplex_connection_failed kind=%s',type(e).__name__)

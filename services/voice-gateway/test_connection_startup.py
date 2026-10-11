@@ -99,6 +99,7 @@ class StartupTests(unittest.IsolatedAsyncioTestCase):
         phone = Phone(link)
         try:
             with patch.object(gateway, 'task_store', store), patch.object(gateway, 'background_tasks', manager), \
+                 patch('notice_audio.shared_cache.prepare'), \
                  patch.object(gateway, 'bridge', None), patch.object(gateway, 'headers', return_value={}), \
                  patch.object(gateway.websockets, 'connect', return_value=provider), \
                  patch.object(gateway.AgentBridge, 'verify_access', new=AsyncMock()), \

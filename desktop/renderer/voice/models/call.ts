@@ -5,7 +5,7 @@ import { VoiceHistoryStore, contextWindow, type VoiceRecord } from '../services/
 
 export interface VoiceTask {
   id: string; title: string; state: string; delivery: string; cursor: number; length: number;
-  stage: string; summary: string; stageUpdated: number; elapsed: number; progress: string; body: string;
+  stage: string; summary: string; stageUpdated: number; elapsed: number; progress: string; body: string; kind?: string;
 }
 const terminalTask = (state: string) => ['completed', 'failed', 'cancelled', 'canceled', 'error', 'interrupted'].includes(state);
 const taskTime = (value: unknown) => typeof value === 'number' && Number.isFinite(value) ? value :
@@ -18,8 +18,8 @@ export class VoiceCall extends Store {
   heard = ''; answer = ''; elapsed = 0; startedAt = 0; cacheNotice = '';
   tasks = new Map<string, VoiceTask>();
   taskStatus = '';
-  get taskRows() { return [...this.tasks.values()].reverse().filter(task => task.state === 'running').slice(0, 3); }
-  get historyTaskRows() { return [...this.tasks.values()].reverse().filter(task => task.state !== 'running'); }
+  get taskRows() { return [...this.tasks.values()].reverse().filter(task => task.kind !== 'reply' && task.state === 'running').slice(0, 3); }
+  get historyTaskRows() { return [...this.tasks.values()].reverse().filter(task => task.kind !== 'reply' && task.state !== 'running'); }
   voice: string = VOICE_OPTIONS[0].id;
   profileState: 'loading' | 'ready' | 'missing' | 'updating' | 'error' = 'loading';
   profileUpdatedAt: string | null = null;
@@ -205,6 +205,7 @@ export class VoiceCall extends Store {
     const raw = input as Record<string, unknown>;
     if (typeof raw.id !== 'string') return;
     const row = this.task(raw.id); if (!row) return;
+    if (typeof raw.kind === 'string') row.kind = raw.kind;
     const state = typeof raw.state === 'string' ? raw.state : row.state;
     // Delayed running updates cannot resurrect a completed/failed task.
     if (terminalTask(row.state) && !terminalTask(state)) return;

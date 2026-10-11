@@ -1,5 +1,6 @@
 """Public failure reasons are fixed text, never raw credential-bearing exceptions."""
 MESSAGES={
+    'reply_unattributed':'已收到会话回复，但无法确认是否答完这件事；回复已保存，没有重复提交。',
     'upstream_interrupted':'Agent 因新消息让位，中断了本次查询，未自动重新提交。',
     'upstream_error':'Agent 返回错误，未收到完整结果。',
     'upstream_http_error':'Agent 接口未接受本次请求。',

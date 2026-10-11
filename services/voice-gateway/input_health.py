@@ -11,7 +11,7 @@ class InputHealth:
         rms=math.sqrt(sum(v*v for v in samples)/320)/32768
         if rms>.008:self.last_signal=now
     def asr(self,kind):
-        if kind=='started' or (kind=='delta' and self.started is None):
+        if kind in ('started','delta') and self.started is None:
             self.started=self.now();self.notified=False
         elif kind in ('completed','failed'):
             self.started=None;self.notified=False

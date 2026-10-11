@@ -72,5 +72,11 @@
   "completion_notice.py",
   "test_completion_notice.py",
   "voice_notices.py",
-  "test_voice_notices.py"
+  "notice_audio.py",
+  "test_notice_audio.py",
+  "test_voice_notices.py",
+  "being_conversation.py",
+  "provider_recovery.py",
+  "test_being_conversation.py",
+  "test_provider_recovery.py"
 ]

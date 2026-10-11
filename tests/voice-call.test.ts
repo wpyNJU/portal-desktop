@@ -197,6 +197,7 @@ test('compact task panel shows three live items without deleting folded history'
  const t=setup();await t.start();t.event('session.created');
  for(let i=0;i<5;i++)t.event('task.updated',{task:{id:`live-${i}`,state:'running',title:`执行${i}`}});
  for(let i=0;i<45;i++)t.event('task.updated',{task:{id:`past-${i}`,state:i===0?'interrupted':'completed',summary:'保留的原文摘录'}});
+ t.event('task.updated',{task:{id:'shared-reply',kind:'reply',state:'running',title:'两个问题的共同回复'}});
  expect(t.model.taskRows.map(row=>row.id)).toEqual(['live-4','live-3','live-2']);expect(t.model.historyTaskRows).toHaveLength(45);
  expect(t.model.tasks.has('live-0')).toBe(true);expect(t.model.tasks.has('past-0')).toBe(true);t.model.dispose();
 });

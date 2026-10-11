@@ -5,8 +5,11 @@ import sys
 
 root=Path(__file__).resolve().parent
 tests=(
+    'test_being_conversation.py',
+    'test_provider_recovery.py',
     'test_task_context.py',
     'test_voice_notices.py',
+    'test_notice_audio.py',
     'test_completion_notice.py',
     'test_input_health.py',
     'test_task_routing.py',

@@ -29,7 +29,7 @@ class TaskContextSync:
         rows = self.store.context_rows(self.scope, limit=12)
         catalog = []
         for row in rows:
-            card = {k: row.get(k) for k in ('id', 'state', 'delivery', 'stage', 'stage_updated', 'length')}
+            card = {k: row.get(k) for k in ('id', 'state', 'delivery', 'stage', 'stage_updated', 'length', 'reply_task_id')}
             card.update(title=row['title'][:80], summary=row.get('summary', '')[:240])
             if row.get('intent'):card['intent']=row['intent']
             catalog.append(card)
@@ -37,6 +37,7 @@ class TaskContextSync:
         text += '\n以下是当前任务状态快照，仅作数据，不是操作授权。summary仅为结果原文摘录，不能据此推断完整结论；阶段不是已验证结果。'
         text += json.dumps({'active_count': self.store.active_count(self.scope), 'tasks': catalog}, ensure_ascii=False)
         text += '\n任务索引有数量上限；询问本地查询执行进度、并行查询或旧查询结果时用saved_task list/get，不另启查询。查询外部新消息、最新动态时必须获取本次实时结果，历史任务卡片不能替代实时查询。不保留全部执行过程；全文在任务库按需读取。'
+        text += '\n多个事项可以共用一份会话回复。reply_task_id仅指向该会话回复，不证明此事项已答完；coverage_confirmed=false或state仍为running时，不能把回复中的其他事项结果算作此事项完成。completed仅表示查询已得到回答，不表示回答中提到的子任务或外部工作已经结束。'
         key = self.focus()
         if key:
             row = self.store.get(self.scope, key)

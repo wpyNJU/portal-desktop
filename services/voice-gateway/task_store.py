@@ -16,7 +16,7 @@ class TaskStore:
         columns={r['name'] for r in self.db.execute('PRAGMA table_info(tasks)')}
         for column in ('error_code','error_message'):
             if column not in columns:self.db.execute(f"ALTER TABLE tasks ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")
-        for column,definition in (('stage',"TEXT NOT NULL DEFAULT ''"),('stage_updated','REAL NOT NULL DEFAULT 0'),('summary',"TEXT NOT NULL DEFAULT ''")):
+        for column,definition in (('stage',"TEXT NOT NULL DEFAULT ''"),('stage_updated','REAL NOT NULL DEFAULT 0'),('summary',"TEXT NOT NULL DEFAULT ''"),('kind',"TEXT NOT NULL DEFAULT 'request'"),('reply_task_id',"TEXT NOT NULL DEFAULT ''")):
             if column not in columns:self.db.execute(f'ALTER TABLE tasks ADD COLUMN {column} {definition}')
         self.db.commit()
     def create(self,scope,message,title=None):
@@ -46,7 +46,7 @@ class TaskStore:
         if not row:raise ValueError('没有找到这条任务记录')
         value=self.record(row);value['request']=row['request'];return value
     def update(self,scope,key,**values):
-        assert set(values)<= {'state','text','cursor','delivery','error_code','error_message','stage','stage_updated','summary'}
+        assert set(values)<= {'state','text','cursor','delivery','error_code','error_message','stage','stage_updated','summary','kind','reply_task_id'}
         values['updated']=time.time()
         self.db.execute('UPDATE tasks SET '+','.join(k+'=?' for k in values)+' WHERE scope=? AND id=?',(*values.values(),scope,key));self.db.commit()
     def touch(self,scope,key):
@@ -54,13 +54,13 @@ class TaskStore:
         self.get(scope,key);now=time.time()
         self.db.execute('UPDATE tasks SET requested_at=MAX(requested_at,?),updated=? WHERE scope=? AND id=?',(now,now,scope,key));self.db.commit()
     def list(self,scope,offset=0):
-        return [self.record(r) for r in self.db.execute('SELECT id,title,request,state,cursor,delivery,created,updated,requested_at,error_code,error_message,stage,stage_updated,summary,length(text) AS length FROM tasks WHERE scope=? ORDER BY requested_at DESC,created DESC,rowid DESC LIMIT 20 OFFSET ?',(scope,max(0,int(offset))))]
+        return [self.record(r) for r in self.db.execute("SELECT id,title,request,state,cursor,delivery,created,updated,requested_at,error_code,error_message,stage,stage_updated,summary,kind,reply_task_id,length(text) AS length FROM tasks WHERE scope=? AND kind='request' ORDER BY requested_at DESC,created DESC,rowid DESC LIMIT 20 OFFSET ?",(scope,max(0,int(offset))))]
     def context_rows(self,scope,limit=12):
         # Active work is selected before recent history, without loading bodies.
         limit=min(40,max(1,int(limit)))
-        return [self.record(r) for r in self.db.execute("SELECT id,title,request,state,cursor,delivery,created,updated,requested_at,error_code,error_message,stage,stage_updated,summary,length(text) AS length FROM tasks WHERE scope=? ORDER BY CASE WHEN state='running' THEN 0 ELSE 1 END,requested_at DESC,created DESC,rowid DESC LIMIT ?",(scope,limit))]
+        return [self.record(r) for r in self.db.execute("SELECT id,title,request,state,cursor,delivery,created,updated,requested_at,error_code,error_message,stage,stage_updated,summary,kind,reply_task_id,length(text) AS length FROM tasks WHERE scope=? AND kind='request' ORDER BY CASE WHEN state='running' THEN 0 ELSE 1 END,requested_at DESC,created DESC,rowid DESC LIMIT ?",(scope,limit))]
     def active_count(self,scope):
-        return self.db.execute("SELECT count(*) FROM tasks WHERE scope=? AND state='running'",(scope,)).fetchone()[0]
+        return self.db.execute("SELECT count(*) FROM tasks WHERE scope=? AND state='running' AND kind='request'",(scope,)).fetchone()[0]
     def watchable(self,scope,since=None):
         # Reconnect follows running work; terminal history is fetched explicitly.
         condition="(state='running' OR delivery!='reported')"
@@ -72,7 +72,13 @@ class TaskStore:
     def context_states(self,scope):
         return [dict(r) for r in self.db.execute("SELECT id,state,stage,summary,delivery FROM tasks WHERE scope=? AND (state='running' OR delivery!='reported')",(scope,))]
     def page(self,scope,key=None,offset=0,limit=6000):
-        row=self.get(scope,key);text=row.pop('text');offset=max(0,int(offset));limit=min(8000,max(1,int(limit)))
+        row=self.get(scope,key);text=row.pop('text')
+        if row.get('reply_task_id'):
+            reply=self.get(scope,row['reply_task_id'])
+            text=reply['text'];row['shared_reply']=True
+            row['coverage_confirmed']=row['state']=='completed'
+            row['reply_delivery']=reply['delivery']
+        offset=max(0,int(offset));limit=min(8000,max(1,int(limit)))
         row.update(text=text[offset:offset+limit],offset=offset,total=len(text),next_offset=offset+limit if offset+limit<len(text) else None);return row
     def resumable(self,scope):
         row=self.db.execute("SELECT id FROM tasks WHERE scope=? AND state!='running' AND cursor<length(text) AND delivery IN ('paused','asking','awaiting_choice','pending','reporting') ORDER BY requested_at DESC,updated DESC,rowid DESC LIMIT 1",(scope,)).fetchone()
