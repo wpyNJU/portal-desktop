@@ -310,8 +310,13 @@ try {
   assert.equal(await visibleQuestion.locator('.content').innerText(), '独立问题');
   assert.equal(await visibleQuestion.locator('.scene-scheduling').count(), 0);
   const schedulingRun = chat.locator('.run-activity').filter({has:chat.locator('.scene-scheduling pre')});
+  // Completion collapses the activity panel. Let the fixture finish before
+  // expanding it, so a late message_stop cannot race with the user click.
+  await chat.getByText('回复：独立问题',{exact:true}).waitFor();
+  await chat.locator('.run-activity:not(.running)').filter({has:chat.locator('.scene-scheduling pre')}).waitFor({state:'attached'});
   assert.equal(await schedulingRun.getAttribute('open'), null);
   await schedulingRun.locator('summary').click();
+  await schedulingRun.locator('.scene-scheduling pre').waitFor({state:'visible'});
   assert.match(await schedulingRun.locator('.scene-scheduling pre').innerText(), /background-a/);
   const pushTasks = async status => page.evaluate(async status => {
     const frame = document.querySelector('iframe');
